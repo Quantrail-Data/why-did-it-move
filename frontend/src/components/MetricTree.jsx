@@ -5,7 +5,11 @@ const STATUS_STYLES = {
   red: { dot: "bg-red-500", badge: "destructive", label: "Anomalous" },
   amber: { dot: "bg-amber-500", badge: "warning", label: "Watch" },
   green: { dot: "bg-emerald-500", badge: "success", label: "Normal" },
-  gray: { dot: "bg-muted-foreground/40", badge: "outline", label: "No baseline" },
+  // "Not evaluated" is deliberately NOT "Normal". A day we could not judge
+  // (no trailing same-weekday history, or too little of it to trust) must
+  // not be rendered as a clean bill of health - the tooltip carries the
+  // specific reason from the backend. See backend/app/coverage.py.
+  gray: { dot: "bg-muted-foreground/40", badge: "outline", label: "Not evaluated" },
 }
 
 const METRIC_LABELS = {
@@ -29,7 +33,7 @@ export default function MetricTree({ tree, loading }) {
       {tree.map((node) => {
         const style = STATUS_STYLES[node.status] || STATUS_STYLES.gray
         return (
-          <Card key={node.metric}>
+          <Card key={node.metric} title={node.not_evaluated_reason || undefined}>
             <CardHeader className="space-y-0 p-3 pb-1">
               <div className="flex items-center justify-between gap-1">
                 <CardTitle className="truncate text-xs">{METRIC_LABELS[node.metric] || node.metric}</CardTitle>
@@ -44,7 +48,9 @@ export default function MetricTree({ tree, loading }) {
                 <span className="truncate text-[11px] text-muted-foreground">
                   {node.pct_deviation != null
                     ? `${node.pct_deviation >= 0 ? "+" : ""}${(node.pct_deviation * 100).toFixed(1)}%`
-                    : "no baseline"}
+                    : node.baseline_n === 0
+                      ? "no history"
+                      : `only ${node.baseline_n} prior`}
                 </span>
                 <Badge variant={style.badge} className="shrink-0 px-1.5 py-0 text-[10px]">
                   {style.label}

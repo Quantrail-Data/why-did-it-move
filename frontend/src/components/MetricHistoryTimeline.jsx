@@ -2,8 +2,6 @@ import { useEffect, useState } from "react"
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
 import { getMetricHistory } from "@/api/client"
 
 const METRICS = [
@@ -71,16 +69,22 @@ function normalizeAllMetrics(results) {
 // bar - flagged or not - runs the same investigate() pipeline a
 // flagged-anomaly click would, so an unflagged day is still one click away,
 // not gated behind typing a date. Doubles as "has anything misbehaved
-// before, and when" at a glance. The from/to range narrows which days are
-// shown (client-side only).
-export default function MetricHistoryTimeline({ onInvestigate, investigating }) {
+// before, and when" at a glance.
+//
+// fromDay/toDay are now controlled by the parent (App.jsx), not owned here -
+// this panel shares ONE date-range control with AnomalyCountChart instead of
+// each carrying its own from/to pair, since both answer "what happened over
+// time" and a reader zooming into a window wants both to move together, not
+// two separate controls that can drift out of sync. onDaysLoaded reports the
+// full fetched day list upward once per fetch, since the parent needs it to
+// know the range's actual min/max bounds and AnomalyCountChart needs the
+// same list to build its own continuous timeline.
+export default function MetricHistoryTimeline({ onInvestigate, investigating, fromDay, toDay, onDaysLoaded }) {
   const [metric, setMetric] = useState("all")
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [hovered, setHovered] = useState(null)
-  const [fromDay, setFromDay] = useState("")
-  const [toDay, setToDay] = useState("")
 
   useEffect(() => {
     setLoading(true)
@@ -96,25 +100,18 @@ export default function MetricHistoryTimeline({ onInvestigate, investigating }) 
     fetchNormalized
       .then((res) => {
         setData(res)
-        // Only default the range on first load - preserve whatever window
-        // the user already picked when they switch metrics, so they can
-        // compare the same window across metrics instead of it resetting.
-        setFromDay((prev) => prev || res.days[0]?.day || "")
-        setToDay((prev) => prev || res.days[res.days.length - 1]?.day || "")
+        onDaysLoaded?.(res.days)
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
+    // onDaysLoaded intentionally excluded - App.jsx defines it fresh each
+    // render, and it would otherwise re-trigger this fetch on every parent
+    // render instead of only on metric change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [metric])
 
   const fullRange = data?.days || []
-  const minDay = fullRange[0]?.day
-  const maxDay = fullRange[fullRange.length - 1]?.day
   const days = fullRange.filter((d) => (!fromDay || d.day >= fromDay) && (!toDay || d.day <= toDay))
-
-  function resetRange() {
-    setFromDay(minDay || "")
-    setToDay(maxDay || "")
-  }
 
   const maxAbsDeviation = Math.max(0.05, ...days.map((d) => Math.abs(d.pct_deviation ?? 0)))
   // Sparse labels so however many days are in view, they don't overlap.
@@ -140,30 +137,6 @@ export default function MetricHistoryTimeline({ onInvestigate, investigating }) 
               ))}
             </SelectContent>
           </Select>
-          <div className="flex items-center gap-1">
-            <Input
-              type="date"
-              value={fromDay}
-              min={minDay}
-              max={toDay || maxDay}
-              onChange={(e) => setFromDay(e.target.value)}
-              className="h-8 w-32 text-xs"
-            />
-            <span className="text-xs text-muted-foreground">to</span>
-            <Input
-              type="date"
-              value={toDay}
-              min={fromDay || minDay}
-              max={maxDay}
-              onChange={(e) => setToDay(e.target.value)}
-              className="h-8 w-32 text-xs"
-            />
-          </div>
-          {(fromDay !== minDay || toDay !== maxDay) && (
-            <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={resetRange}>
-              Reset range
-            </Button>
-          )}
         </div>
       </CardHeader>
       <CardContent>

@@ -5,9 +5,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import ask as ask_module
-from . import config, db, detect, ingest
+from . import config, coverage as coverage_module, db, detect, ingest
 from . import investigate as investigate_module
-from . import metrics, schemas, thresholds as thresholds_module, timeline as timeline_module
+from . import metrics, revenue_signals, schemas, thresholds as thresholds_module, timeline as timeline_module, timing
 
 app = FastAPI(title="Why Did It Move - InMobi root-cause backend")
 
@@ -36,7 +36,14 @@ def list_anomalies(day: Optional[date] = None, status: str = "open"):
     client = db.get_ro_client()
     conditions = []
     params = {}
-    if status:
+    # "all" is a sentinel meaning "every status, no filter" - used by the
+    # anomaly-count-by-metric chart, which counts everything the system has
+    # ever detected (including already-investigated and dismissed
+    # candidates), not just what's currently sitting open. The default stays
+    # "open" so every existing caller (the Flagged anomalies panel) is
+    # unaffected - this only changes behavior when a caller asks for "all"
+    # explicitly.
+    if status and status != "all":
         conditions.append("status = {status:String}")
         params["status"] = status
     if day:
@@ -104,6 +111,11 @@ def metric_tree(day: date):
         dev = investigate_module.compute_daily_deviation(client, day, metric_name)
         pct = dev.get("pct_deviation") if dev else None
         pct_threshold = computed_thresholds[metric_name]["pct_threshold"]
+        # "gray" means we could NOT evaluate this metric on this day (no
+        # trailing same-weekday history, or too little of it) - deliberately
+        # a distinct state from "green" (evaluated, and it was fine). The
+        # reason travels with it so the UI can say which, rather than
+        # rendering an unanswerable question as a clean bill of health.
         if pct is None:
             status = "gray"
         elif abs(pct) >= pct_threshold * 2:
@@ -112,7 +124,7 @@ def metric_tree(day: date):
             status = "amber"
         else:
             status = "green"
-        tree.append({"metric": metric_name, "status": status, **(dev or {})})
+        tree.append({"metric": metric_name, "status": status, "pct_threshold": pct_threshold, **(dev or {})})
     return tree
 
 
@@ -153,6 +165,40 @@ def timeline_endpoint(
     client = db.get_ro_client()
     try:
         return timeline_module.get_timeline(client, metric, day, dimension, value, dimension2, value2)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/latency-stats")
+def latency_stats_endpoint(endpoint: str = "investigate"):
+    """p50/p95/p99 wall-clock latency across every logged call to `endpoint`
+    - not one run's timing (that's already in every /api/investigate
+    response), but the DISTRIBUTION, which is what "fast" actually means as
+    a claim. See backend/app/timing.py."""
+    client = db.get_ro_client()
+    return timing.stats(client, endpoint)
+
+
+@app.get("/api/revenue-signals")
+def revenue_signals_endpoint(day: Optional[date] = None):
+    """Revenue incident shapes the day-grain threshold scan cannot express -
+    sustained drift, collapsed segments, and mix shifts. See
+    backend/app/revenue_signals.py for why each needs its own detector rather
+    than a different threshold on the existing one."""
+    client = db.get_ro_client()
+    try:
+        cov = coverage_module.day_coverage(client)
+        hour_cutoff = coverage_module.hour_cutoff_for(cov, day) if day else None
+        computed = thresholds_module.compute_metric_thresholds(client, ["revenue"])
+        result = revenue_signals.all_signals(
+            client, hour_cutoff=hour_cutoff, volume_floor=computed["revenue"]["volume_floor"]
+        )
+        if day:
+            day_str = str(day)
+            for key in ("sustained_drift", "collapsed_segment", "share_shift"):
+                result[key] = [s for s in result[key] if str(s["day"]) == day_str]
+            result["total"] = sum(len(result[k]) for k in ("sustained_drift", "collapsed_segment", "share_shift"))
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

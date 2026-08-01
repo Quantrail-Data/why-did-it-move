@@ -54,14 +54,23 @@ _DIM_DEVIATION_SUBQUERY = """
         SELECT
             requests,
             {metric_expr} AS actual_value,
-            avg({metric_expr}) OVER (
+            quantileExact(0.5)({metric_expr}) OVER (
                 PARTITION BY segment_value, toDayOfWeek(day)
                 ORDER BY day
                 ROWS BETWEEN {trailing} PRECEDING AND 1 PRECEDING
-            ) AS baseline_avg
+            ) AS baseline_avg,
+            count({metric_expr}) OVER (
+                PARTITION BY segment_value, toDayOfWeek(day)
+                ORDER BY day
+                ROWS BETWEEN {trailing} PRECEDING AND 1 PRECEDING
+            ) AS baseline_n
         FROM daily
     )
-    WHERE baseline_avg > 0
+    -- Same robust (median) baseline detect.py/investigate.py now use - see
+    -- baseline.py. Measuring the noise distribution with a mean while
+    -- flagging against a median would calibrate the threshold against a
+    -- different statistic than the one being thresholded.
+    WHERE baseline_avg > 0 AND baseline_n >= {min_baseline_samples}
 """
 
 _METRIC_THRESHOLD_QUERY = """
@@ -95,11 +104,18 @@ def compute_metric_thresholds(client, metric_names) -> dict:
     result = {}
     for metric_name in metric_names:
         metric_expr = metrics.METRIC_EXPRESSIONS[metric_name]
+        # Degenerate cuts excluded: fill_rate is 1.0 by construction inside
+        # every vertical/campaign_type (see metrics.DEGENERATE_METRIC_DIMENSIONS),
+        # so including them would stuff the noise distribution with thousands
+        # of exactly-zero deviations and drag the p95 cutoff artificially low.
         subqueries = [
             _DIM_DEVIATION_SUBQUERY.format(
-                dim_col=dim_col, metric_expr=metric_expr, trailing=config.TRAILING_WEEKS
+                dim_col=dim_col,
+                metric_expr=metric_expr,
+                trailing=config.TRAILING_WEEKS,
+                min_baseline_samples=config.MIN_BASELINE_SAMPLES,
             )
-            for dim_col in metrics.DIMENSIONS
+            for dim_col in metrics.scannable_dimensions(metric_name)
         ]
         query = _METRIC_THRESHOLD_QUERY.format(unioned_subqueries=" UNION ALL ".join(subqueries))
         row = client.query(query).result_rows[0]

@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { MessageCircle, Download, ChevronDown, ChevronRight } from "lucide-react"
+import { MessageCircle, Download, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import PlaybackTimeline from "@/components/PlaybackTimeline"
 import ChatBox from "@/components/ChatBox"
+import LatencyBar from "@/components/LatencyBar"
 import { buildInvestigationPdf, downloadPdf } from "@/lib/report"
 
 // Same colors as the badges above (warning=amber for factors, destructive=
@@ -99,7 +100,43 @@ export default function InvestigationDetail({ result, loading }) {
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Disclosed before the diagnosis, not buried under it - if the day
+            is only partly loaded, that changes how every number below should
+            be read, so it cannot be a footnote. See backend/app/coverage.py. */}
+        {result.data_coverage_note && (
+          <div className="flex gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+            <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-amber-600" />
+            <span>{result.data_coverage_note}</span>
+          </div>
+        )}
+
         <p className="text-sm leading-relaxed">{diagnosis_text}</p>
+
+        <LatencyBar timings={result.timings} />
+
+        {/* Confidence and the evidence behind it, side by side. baseline_n is
+            shown because a -45% move measured against 4 prior same-weekdays
+            and the same -45% against 2 are not equally strong claims, and the
+            confidence score is explicitly discounted for the difference. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {result.confidence != null && (
+            <span>
+              Confidence <span className="font-medium text-foreground tabular-nums">{result.confidence.toFixed(2)}</span>
+            </span>
+          )}
+          {result.overall?.baseline_n != null && (
+            <span>
+              Baseline from{" "}
+              <span className="font-medium text-foreground tabular-nums">{result.overall.baseline_n}</span>{" "}
+              prior same-weekday{result.overall.baseline_n === 1 ? "" : "s"}
+            </span>
+          )}
+          {result.overall?.evaluated_hours && (
+            <span>
+              Hours compared <span className="font-medium text-foreground">{result.overall.evaluated_hours}</span>
+            </span>
+          )}
+        </div>
 
         {responsible_segment && (
           <div>

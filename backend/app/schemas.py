@@ -15,10 +15,27 @@ class MetricThreshold(BaseModel):
     dynamic: bool
 
 
+class PartialDay(BaseModel):
+    day: str
+    note: Optional[str] = None
+
+
+class ScanCoverage(BaseModel):
+    """What the scan could and could not evaluate. Reported explicitly so a
+    day the scan was unable to judge is never rendered the same as a day it
+    judged and found clean - see backend/app/coverage.py."""
+
+    days_loaded: int
+    partial_days: list[PartialDay]
+    skipped_insufficient_history: int
+    min_baseline_samples: int
+
+
 class ScanResponse(BaseModel):
     scanned: int
     new_candidates: int
     thresholds: dict[str, MetricThreshold]
+    coverage: ScanCoverage
 
 
 class InvestigateRequest(BaseModel):

@@ -97,10 +97,20 @@ def get_timeline(
         _hourly_series(client, metric_name, day, dim_col, value, dim_col2, value2) if dim_col and value else None
     )
 
+    # Threshold must be this metric's own live-computed one, the same number
+    # detect.py/investigate.py flag against - it was previously the static
+    # config constant, so playback could mark an "anomaly hour" that the rest
+    # of the pipeline did not consider anomalous at all (and vice versa) on
+    # the same metric and day.
+    from . import thresholds as thresholds_module
+
+    metric_thresholds = thresholds_module.compute_metric_thresholds(client, [metric_name])
+    pct_threshold = metric_thresholds[metric_name]["pct_threshold"]
+
     driver = segment if segment else overall
     anomaly_hour = None
     for point in driver:
-        if point["pct_deviation"] is not None and abs(point["pct_deviation"]) >= config.PCT_DEVIATION_THRESHOLD:
+        if point["pct_deviation"] is not None and abs(point["pct_deviation"]) >= pct_threshold:
             anomaly_hour = point["hour"]
             break
 
@@ -118,4 +128,5 @@ def get_timeline(
         "segment": segment,
         "segment_label": segment_label,
         "anomaly_hour": anomaly_hour,
+        "pct_threshold": pct_threshold,
     }

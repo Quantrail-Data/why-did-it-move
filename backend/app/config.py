@@ -62,3 +62,15 @@ MIN_PCT_DEVIATION_THRESHOLD = float(os.environ.get("MIN_PCT_DEVIATION_THRESHOLD"
 # bucket boundary scripts/validate_thresholds.sql Part 2 empirically showed
 # has materially higher deviation variance below it on the known dataset.
 MIN_VOLUME_FLOOR_ABSOLUTE = int(os.environ.get("MIN_VOLUME_FLOOR_ABSOLUTE", "200"))
+
+# Minimum number of prior same-weekday observations required before a
+# deviation is allowed to raise an alert. Not arbitrary: measured on the
+# loaded 5-week batch, days 1-7 have ZERO prior same-weekday history (their
+# baseline is NaN and they were already being silently dropped), and days
+# 8-14 have exactly one - a single-sample baseline with zero variance, which
+# makes the z-score condition undefined and collapses detection to the
+# deviation threshold alone. Requiring 2 means a baseline is at least a
+# comparison between two prior weeks rather than an echo of one. The days
+# this excludes are now reported as "not evaluated" instead of being
+# rendered the same as "evaluated and clean" - see scan()'s coverage block.
+MIN_BASELINE_SAMPLES = int(os.environ.get("MIN_BASELINE_SAMPLES", "2"))

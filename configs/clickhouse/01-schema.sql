@@ -161,7 +161,16 @@ CREATE TABLE IF NOT EXISTS inmobi_rca.anomaly_candidates
     actual_value   Float64,
     pct_deviation  Float64,
     z_score        Float64,
-    status         Enum8('open' = 1, 'investigated' = 2, 'dismissed' = 3) DEFAULT 'open'
+    status         Enum8('open' = 1, 'investigated' = 2, 'dismissed' = 3) DEFAULT 'open',
+    -- How many prior same-weekday observations backed the baseline this
+    -- candidate was measured against. A -45% move off 4 prior weeks and the
+    -- same -45% off 1 are not equally strong evidence, and the UI must not
+    -- present them as if they were. See config.MIN_BASELINE_SAMPLES.
+    baseline_n     UInt8 DEFAULT 0,
+    -- Non-empty only when the day was partially loaded and therefore
+    -- evaluated over a restricted hour window (e.g. '00:00-13:59') against
+    -- the same hours of its baselines - see backend/app/coverage.py.
+    evaluated_hours String DEFAULT ''
 )
 ENGINE = MergeTree
 ORDER BY (day, metric);
@@ -203,5 +212,26 @@ CREATE TABLE IF NOT EXISTS inmobi_rca.chat_queries
 )
 ENGINE = MergeTree
 ORDER BY created_at;
+
+-- Per-call latency log, one row per /api/investigate run - what p50/p95/p99
+-- latency is computed FROM. A single run's timing (backend/app/timing.py,
+-- shown on every diagnosis) tells you how long THAT diagnosis took; it
+-- cannot tell you whether that run was typical or a lucky outlier. p95 needs
+-- a distribution across many calls, which needs the calls persisted
+-- somewhere queryable - this table is that, and ClickHouse's quantile()
+-- computes the percentiles, same "ClickHouse does the analysis" pattern as
+-- everything else in this schema, not a number computed in Python.
+-- ORDER BY endpoint first since every query filters to one endpoint
+-- (currently just 'investigate') before computing its percentiles.
+CREATE TABLE IF NOT EXISTS inmobi_rca.request_latencies
+(
+    created_at   DateTime DEFAULT now(),
+    endpoint     LowCardinality(String),
+    total_ms     Float64,
+    clickhouse_ms Float64,
+    llm_ms       Float64
+)
+ENGINE = MergeTree
+ORDER BY (endpoint, created_at);
 
 GRANT SELECT ON inmobi_rca.* TO ro;

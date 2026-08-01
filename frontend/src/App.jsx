@@ -8,6 +8,9 @@ import MetricTree from "@/components/MetricTree"
 import AnomalyList from "@/components/AnomalyList"
 import InvestigationDetail from "@/components/InvestigationDetail"
 import MetricHistoryTimeline from "@/components/MetricHistoryTimeline"
+import RevenueSignals from "@/components/RevenueSignals"
+import AnomalyCountChart from "@/components/AnomalyCountChart"
+import LatencyStats from "@/components/LatencyStats"
 import { listAnomalyCandidates, triggerScan, investigate, getMetricTree } from "@/api/client"
 
 const METRIC_FILTERS = [
@@ -36,6 +39,36 @@ export default function App() {
   const [error, setError] = useState(null)
   const [searchText, setSearchText] = useState("")
   const [metricFilter, setMetricFilter] = useState("all")
+  const [scanCoverage, setScanCoverage] = useState(null)
+  const [latencyRefreshKey, setLatencyRefreshKey] = useState(0)
+
+  // Shared date-range state for the two "over time" panels (Anomaly history
+  // + Anomaly counts) - one control drives both instead of each owning its
+  // own from/to pair. timelineDays is the canonical full day list, reported
+  // up by MetricHistoryTimeline once it fetches (every metric covers the
+  // same date range, so whichever one it happens to have loaded is fine as
+  // the source of truth) - Anomaly counts needs that same list to draw a
+  // continuous timeline instead of only plotting days that have a candidate.
+  const [timelineDays, setTimelineDays] = useState([])
+  const [timelineFrom, setTimelineFrom] = useState("")
+  const [timelineTo, setTimelineTo] = useState("")
+
+  const handleTimelineDaysLoaded = useCallback((days) => {
+    const dayStrings = days.map((d) => d.day)
+    setTimelineDays(dayStrings)
+    // Only default the range once - if the user already narrowed it,
+    // switching the metric inside Anomaly History shouldn't reset their zoom.
+    setTimelineFrom((prev) => prev || dayStrings[0] || "")
+    setTimelineTo((prev) => prev || dayStrings[dayStrings.length - 1] || "")
+  }, [])
+
+  const timelineMin = timelineDays[0]
+  const timelineMax = timelineDays[timelineDays.length - 1]
+
+  function resetTimelineRange() {
+    setTimelineFrom(timelineMin || "")
+    setTimelineTo(timelineMax || "")
+  }
 
   const filteredAnomalies = useMemo(() => {
     const q = searchText.trim().toLowerCase()
@@ -89,7 +122,8 @@ export default function App() {
     setScanning(true)
     setError(null)
     try {
-      await triggerScan({})
+      const res = await triggerScan({})
+      setScanCoverage(res?.coverage || null)
       await loadAnomalies(day)
       await loadTree(day)
     } catch (e) {
@@ -107,6 +141,10 @@ export default function App() {
     try {
       const res = await investigate({ metric, day: investigateDay, anomalyCandidateId })
       setResult(res)
+      // Bumps LatencyStats to reload - this run just added a new sample to
+      // the p95 distribution, so the stat shown should include it without
+      // needing a manual refresh click.
+      setLatencyRefreshKey((k) => k + 1)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -147,14 +185,89 @@ export default function App() {
         </div>
       )}
 
+      <LatencyStats refreshKey={latencyRefreshKey} />
+
+      {/* What the last scan could and could not evaluate. Shown because a
+          day the scan was unable to judge must not be presented the same way
+          as a day it judged and found clean - see backend/app/coverage.py. */}
+      {scanCoverage && (scanCoverage.partial_days?.length > 0 || scanCoverage.skipped_insufficient_history > 0) && (
+        <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+          <div className="font-semibold">Detection coverage</div>
+          <ul className="mt-1 list-inside list-disc space-y-0.5">
+            {scanCoverage.partial_days?.map((p) => (
+              <li key={p.day}>{p.note || `${p.day} is only partially loaded.`}</li>
+            ))}
+            {scanCoverage.skipped_insufficient_history > 0 && (
+              <li>
+                {scanCoverage.skipped_insufficient_history.toLocaleString()} segment-days skipped: fewer than{" "}
+                {scanCoverage.min_baseline_samples} prior same-weekday observations to compare against. Not evaluated,
+                not cleared.
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
       <section className="mb-6">
         <h2 className="mb-2 text-sm font-semibold uppercase text-muted-foreground">Metric tree - {day}</h2>
         <MetricTree tree={tree} loading={treeLoading} />
       </section>
 
-      {/* Detection-side views, side by side: what the scan flagged on its
-          own, and the full history to click into anything it didn't. Both
-          are Cards now, same bordered-container treatment on both sides. */}
+      {/* Grouped by what they answer, not by build order: the two "over
+          time" views (Anomaly history's deviation-per-day, Anomaly counts'
+          breadth-per-day) share one row and one date-range control below -
+          zooming into a window moves both charts together instead of two
+          independent pickers that can drift out of sync. */}
+      <section className="mb-6">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase text-muted-foreground">Anomaly timelines</h2>
+          <div className="flex items-center gap-1">
+            <Input
+              type="date"
+              value={timelineFrom}
+              min={timelineMin}
+              max={timelineTo || timelineMax}
+              onChange={(e) => setTimelineFrom(e.target.value)}
+              className="h-8 w-32 text-xs"
+            />
+            <span className="text-xs text-muted-foreground">to</span>
+            <Input
+              type="date"
+              value={timelineTo}
+              min={timelineFrom || timelineMin}
+              max={timelineMax}
+              onChange={(e) => setTimelineTo(e.target.value)}
+              className="h-8 w-32 text-xs"
+            />
+            {(timelineFrom !== timelineMin || timelineTo !== timelineMax) && (
+              <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={resetTimelineRange}>
+                Reset range
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <MetricHistoryTimeline
+            onInvestigate={({ metric, day: d }) => runInvestigate({ metric, day: d })}
+            investigating={investigating}
+            fromDay={timelineFrom}
+            toDay={timelineTo}
+            onDaysLoaded={handleTimelineDaysLoaded}
+          />
+          <AnomalyCountChart
+            onInvestigate={runInvestigate}
+            allDays={timelineDays}
+            fromDay={timelineFrom}
+            toDay={timelineTo}
+          />
+        </div>
+      </section>
+
+      {/* The two "current state" views: what the scan flagged on its own,
+          and what shape of revenue problem is present right now
+          (drift/collapse/mix-shift) - separate from the threshold scan on
+          purpose, since merging either into it would make the flag count
+          meaningless. See backend/app/revenue_signals.py. */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -199,10 +312,7 @@ export default function App() {
           </CardContent>
         </Card>
 
-        <MetricHistoryTimeline
-          onInvestigate={({ metric, day: d }) => runInvestigate({ metric, day: d })}
-          investigating={investigating}
-        />
+        <RevenueSignals day={day} onInvestigate={runInvestigate} />
       </div>
 
       {/* Full-width below, not squeezed into a half-width column - once a

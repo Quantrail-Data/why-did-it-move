@@ -7,17 +7,43 @@ import json
 
 from . import config, metrics
 
-NARRATE_SYSTEM_PROMPT = (
+# Base instructions that are true for EVERY narration call. Anything that
+# depends on a field actually being present in the input is appended
+# conditionally by narrate() below - see the comment there.
+_NARRATE_BASE_PROMPT = (
     "You are a root-cause analyst narrating a pre-computed ad-metrics investigation. "
     "You are given ONLY structured, already-computed numbers as JSON - never invent, "
     "estimate, or round a number that isn't present in the input. Write 2-4 sentences: "
-    "state what moved, by how much (cite the actual percentages/values given), the "
-    "specific segment or factor responsible, and what was checked and ruled out. If "
-    "responsible_segment has a 'refined_by' field, that's a more specific intersection "
-    "found within the segment (e.g. segment=country/IN refined_by=device_model/iPhone) - "
-    "mention that tighter localization instead of just the outer segment. Plain "
-    "language, no jargon, written for a product manager, not a database engineer."
+    "state what moved, by how much (cite the actual percentages/values given), and the "
+    "specific segment or factor responsible. "
+    "NEVER claim that anything was checked, investigated, considered, or ruled out "
+    "unless it appears verbatim in the input's checked_and_ruled_out list. Do not "
+    "mention factors that are not in the input at all (for example user engagement, "
+    "content quality, seasonality, or market conditions) even to say they were "
+    "excluded - if it is not in the input, it was not checked, and saying otherwise "
+    "is a fabrication. If responsible_segment has a 'refined_by' field, that's a more "
+    "specific intersection found within the segment (e.g. segment=country/IN "
+    "refined_by=device_model/iPhone) - mention that tighter localization instead of "
+    "just the outer segment. Plain language, no jargon, written for a product manager, "
+    "not a database engineer."
 )
+
+# Only appended when the input genuinely carries a non-empty ruled-out list.
+_NARRATE_RULED_OUT_CLAUSE = (
+    " The input includes a checked_and_ruled_out list; also state what was checked and "
+    "came back normal, using only the entries in that list."
+)
+
+# Only appended when the day was partly loaded (coverage.py).
+_NARRATE_COVERAGE_CLAUSE = (
+    " The input includes a data_coverage_note: the day is only partially loaded and was "
+    "compared over a restricted hour window. State this limitation explicitly in your "
+    "answer so the reader does not mistake it for a full-day figure."
+)
+
+# Kept as the exported name other code/tests may reference; the effective
+# prompt is assembled per call by narrate().
+NARRATE_SYSTEM_PROMPT = _NARRATE_BASE_PROMPT + _NARRATE_RULED_OUT_CLAUSE
 
 ASK_SYSTEM_PROMPT = (
     "You translate a free-text question into a structured lookup, for a system that answers "
@@ -99,9 +125,29 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
 
 
 def narrate(findings: dict) -> str:
-    """findings must already be fully computed - this call cannot add facts."""
+    """findings must already be fully computed - this call cannot add facts.
+
+    The system prompt is assembled from what the input actually contains,
+    rather than being one fixed string. This is not a style choice, it fixes
+    a real fabrication: the prompt used to instruct the model to state "what
+    was checked and ruled out" on every call, including the bare-segment
+    lookup path in ask.py whose input has no checked_and_ruled_out field at
+    all. Asked to report a list that wasn't there, the model invented a
+    plausible one - observed live, claiming "we checked various factors,
+    including user engagement and content quality, but ruled those out" when
+    neither had been checked and neither exists anywhere in this dataset.
+
+    A prompt that asks for something the input cannot supply is an
+    instruction to hallucinate. So the clause is only present when the field
+    is, and the base prompt now forbids inventing checks outright.
+    """
+    system_prompt = _NARRATE_BASE_PROMPT
+    if findings.get("checked_and_ruled_out"):
+        system_prompt += _NARRATE_RULED_OUT_CLAUSE
+    if findings.get("data_coverage_note"):
+        system_prompt += _NARRATE_COVERAGE_CLAUSE
     prompt = "Investigation findings (JSON):\n" + json.dumps(findings, default=str, indent=2)
-    return _call_llm(NARRATE_SYSTEM_PROMPT, prompt)
+    return _call_llm(system_prompt, prompt)
 
 
 def parse_question(question: str, schema_hint: str) -> dict:
