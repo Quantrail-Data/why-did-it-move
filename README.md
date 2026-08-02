@@ -45,7 +45,7 @@ InMobi's ad business runs at global scale - every app open, scroll, and ad slot 
 
 **The ask:** given a stream of ad-event data, **detect** when a headline metric deviates from its normal baseline, **automatically drill down** to the exact responsible segment, and **produce a plain-language diagnosis** where every claim is backed by a real, reproducible number - stating what was checked and ruled out, not just what was found. A private, unseen slice of new data (with new planted anomalies) drops in the final hours; the system has to work on data it has never seen, not just the known training batch.
 
-Full spec: the original package's `PROBLEM_STATEMENT.md` and `metrics_glossary.md` (not included in this public repo - see [`INMOBI_CONTEXT.md`](INMOBI_CONTEXT.md) for the condensed, load-bearing facts).
+Full spec: the original package's `PROBLEM_STATEMENT.md` and `metrics_glossary.md` (not included in this public repo - [see the official problem statement repo](https://github.com/sidagarwal04/click-a-thon-2026/tree/main/InMobi)).
 
 ## Our solution
 
