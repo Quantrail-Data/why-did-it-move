@@ -1,20 +1,12 @@
 """Background scan: sweeps every headline metric x every dimension for
-deviations from a trailing same-weekday baseline, entirely in one ClickHouse
-query per (metric, dimension) pair using window functions over the
-hourly_segment_metrics rollup - never the raw ad_events table, and never one
-round-trip per segment value. This is the "Detect" step: it runs on its own,
-nobody has to already know where to look.
-"""
+deviations from a trailing same-weekday baseline, one ClickHouse query per
+(metric, dimension) pair over the hourly_segment_metrics rollup."""
 from datetime import date
 from typing import Optional
 
 from . import baseline as baseline_module
 from . import config, coverage as coverage_module, db, investigate as investigate_module, metrics, thresholds as thresholds_module
 
-# Baseline window (trailing same-weekday, robust median) is built by
-# baseline.py so this query and the five others like it cannot drift apart -
-# see the module docstring there for why the baseline is a median and not a
-# mean, and coverage.py for the hour restriction.
 _DAILY_SEGMENT_QUERY = """
     WITH daily AS (
         SELECT
@@ -54,11 +46,6 @@ def _build_daily_segment_query(dim_col: str, metric_expr: str, hour_cutoff=None)
 
 
 def _existing_open_keys(client) -> set:
-    """(day, metric, dimension, value) already flagged 'open' - scan() must
-    be safe to re-run (a second click of "Re-scan", or a re-run after
-    loading more data) without re-inserting the same candidate. Each
-    candidate's segment_dims map always has exactly one key/value pair.
-    """
     rows = client.query(
         "SELECT day, metric, segment_dims FROM inmobi_rca.anomaly_candidates WHERE status = 'open'"
     ).result_rows
@@ -77,19 +64,10 @@ def scan(since_day: Optional[date] = None) -> dict:
     new_candidates = []
     existing_keys = _existing_open_keys(client)
 
-    # Computed once per scan from whatever data is currently loaded - see
-    # thresholds.py. Replaces the flat PCT_DEVIATION_THRESHOLD/
-    # MIN_VOLUME_FLOOR constants with a per-metric empirical cutoff, so a
-    # metric's own volatility (not one shared 30% for all four) decides
-    # whether a deviation is real.
     computed_thresholds = thresholds_module.compute_metric_thresholds(client, metrics.HEADLINE_METRICS)
 
-    # A partly-loaded day must be compared against the SAME hours of its
-    # trailing baselines, never against their full 24 - see coverage.py for
-    # the measured consequence of getting this wrong. Complete days are
-    # scanned in one unrestricted pass; each partial day gets its own
-    # hour-restricted pass, so no complete day's numbers are altered by the
-    # presence of a partial one.
+    # Partial days are compared against the same hour window on their
+    # baselines, never full 24h - see coverage.py.
     coverage = coverage_module.day_coverage(client)
     complete_days = {d for d, info in coverage.items() if info["complete"]}
     passes = [(None, complete_days)]
@@ -100,10 +78,6 @@ def scan(since_day: Optional[date] = None) -> dict:
         metric_expr = metrics.METRIC_EXPRESSIONS[metric_name]
         pct_threshold = computed_thresholds[metric_name]["pct_threshold"]
         volume_floor = computed_thresholds[metric_name]["volume_floor"]
-        # Skips (metric, dimension) cuts that are mathematically incapable of
-        # deviating - see metrics.DEGENERATE_METRIC_DIMENSIONS. They are
-        # reported as explicitly not-applicable by investigate(), not
-        # silently dropped and not falsely claimed as "checked".
         for dim_col in metrics.scannable_dimensions(metric_name):
             for hour_cutoff, days_in_pass in passes:
                 if not days_in_pass:
@@ -120,18 +94,10 @@ def scan(since_day: Optional[date] = None) -> dict:
 
                     if since_day is not None and day < since_day:
                         continue
-                    # The blank value is unfilled traffic, not a segment.
                     if str(segment_value) == metrics.BLANK_SEGMENT_VALUE:
                         continue
                     if metrics.is_invalid_number(baseline_avg) or baseline_avg == 0 or requests < volume_floor:
                         continue
-                    # A deviation measured against fewer than N prior
-                    # same-weekday observations is not evidence we should be
-                    # raising an alert on. Measured on the loaded batch: the
-                    # first 7 days have zero prior same-weekday history and
-                    # the next 7 have exactly one, so a third of the range
-                    # would otherwise be judged against a single data point
-                    # with no variance at all.
                     if (baseline_n or 0) < config.MIN_BASELINE_SAMPLES:
                         skipped_low_history += 1
                         continue
@@ -142,13 +108,8 @@ def scan(since_day: Optional[date] = None) -> dict:
                         if baseline_stddev and baseline_stddev > 0
                         else None
                     )
-                    # AND, not OR - requiring both a large deviation and a
-                    # statistically real one is what actually cuts noise; OR let
-                    # either condition alone flag it, which is how we ended up
-                    # flagging ~26% of everything. Exception: when the trailing
-                    # baseline has zero variance (a perfectly flat history), z is
-                    # undefined - that's not a reason to skip a real deviation,
-                    # so fall back to the deviation threshold alone in that case.
+                    # AND, not OR: both a large and statistically real
+                    # deviation, or ~26% of everything gets flagged.
                     if z is not None:
                         is_anomaly = (
                             abs(pct_dev) >= pct_threshold
@@ -181,10 +142,6 @@ def scan(since_day: Optional[date] = None) -> dict:
                         }
                     )
 
-    # Multi-dimension drill-down for this run's newly-flagged candidates
-    # only (not every already-open one on every re-scan) - keeps scan cost
-    # bounded to the delta each run, not an 8x blowup of the full sweep.
-    # See investigate.py::refine_segment.
     for c in new_candidates:
         outer_dim, outer_value = next(iter(c["segment_dims"].items()))
         combo = investigate_module.refine_segment(
@@ -229,9 +186,6 @@ def scan(since_day: Optional[date] = None) -> dict:
         "scanned": scanned,
         "new_candidates": len(new_candidates),
         "thresholds": computed_thresholds,
-        # Detection coverage, stated rather than implied. A day the scan
-        # could not evaluate is not the same as a day it evaluated and found
-        # clean, and the dashboard must not render them identically.
         "coverage": {
             "days_loaded": len(coverage),
             "partial_days": [

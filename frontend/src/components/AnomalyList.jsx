@@ -32,31 +32,33 @@ export default function AnomalyList({
   return (
     <div className="space-y-2">
       {anomalies.map((a) => (
-        <Card key={a.id}>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle>
-                {METRIC_LABELS[a.metric] || a.metric} · {segmentLabel(a.segment_dims)}
-              </CardTitle>
-              <Badge variant={a.pct_deviation < 0 ? "destructive" : "warning"}>
-                {a.pct_deviation >= 0 ? "+" : ""}
-                {(a.pct_deviation * 100).toFixed(1)}%
-              </Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="flex items-center justify-between">
-            <span className="text-xs text-muted-foreground">
-              actual {a.actual_value.toFixed(4)} vs baseline {a.baseline_value.toFixed(4)} · z={a.z_score.toFixed(2)}
-            </span>
-            <Button
-              size="sm"
-              disabled={investigatingId === a.id}
-              onClick={() => onInvestigate(a)}
-            >
-              {investigatingId === a.id ? "Investigating…" : "Investigate"}
-            </Button>
-          </CardContent>
-        </Card>
+        <div key={a.id} className="w-[98%]">
+          <Card  >
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle>
+                  {METRIC_LABELS[a.metric] || a.metric} · {segmentLabel(a.segment_dims)}
+                </CardTitle>
+                <Badge variant={a.pct_deviation < 0 ? "destructive" : "warning"}>
+                  {a.pct_deviation >= 0 ? "+" : ""}
+                  {(a.pct_deviation * 100).toFixed(1)}%
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">
+                actual {a.actual_value.toFixed(4)} vs baseline {a.baseline_value.toFixed(4)} · z={a.z_score.toFixed(2)}
+              </span>
+              <Button
+                size="sm"
+                disabled={investigatingId === a.id}
+                onClick={() => onInvestigate(a)}
+              >
+                {investigatingId === a.id ? "Investigating…" : "Investigate"}
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
       ))}
     </div>
   )

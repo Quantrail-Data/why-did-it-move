@@ -1,22 +1,7 @@
 #!/bin/bash
-# One-time (and re-runnable for the Day-2 unseen incident) data load into
-# ClickHouse. Not a Compose service on purpose - this is an explicitly
-# triggered step, not something that should re-run on every container
-# restart. Run from the repo root after `docker compose up -d clickhouse`
-# (or the full stack) is healthy:
+# Bulk data load into ClickHouse, re-runnable for the Day-2 unseen slice.
 #
-#   ./scripts/load_data.sh
-#
-# Dimension tables load BEFORE ad_events on purpose: the mv_hourly_segment_metrics
-# materialized view joins against apps/advertisers/geo_device at insert time,
-# so if ad_events loaded first, that first (largest) batch would resolve
-# every segment column to '' since the lookup tables would still be empty.
-#
-# For the Day-2 unseen-incident slice: drop the new files into
-# data/inmobi/ (same filenames, or point LOAD_DIR at wherever they land) and
-# re-run this script. New dimension rows upsert (ReplacingMergeTree);
-# ad_events just gets new partitions for the new day(s) - no table changes,
-# no re-running past days.
+#   ./scripts/load_data.sh [dir] [--allow-overlap] [--force]
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -56,14 +41,6 @@ ch_insert() {
         --query "INSERT INTO $table FORMAT $format" < "$file"
 }
 
-# --- Idempotency guard -------------------------------------------------------
-# ad_events is a plain MergeTree and the INSERT below is unguarded, so loading
-# a file whose days are already present silently DOUBLES every number for
-# those days - no error, no warning, and every downstream metric quietly wrong.
-# This matters because both PROGRESS.md and INMOBI_CONTEXT.md tell you to
-# re-run this script for the Day-2 slice, which is only safe if that package
-# contains just the new days. That is an assumption about a file nobody has
-# seen yet, not a guarantee - so check instead of assuming.
 ch_query() {
     docker compose exec -T clickhouse clickhouse-client \
         --user "$CH_USER" --password "$CH_PASSWORD" --query "$1"
@@ -71,32 +48,8 @@ ch_query() {
 
 EXISTING_ROWS="$(ch_query "SELECT count() FROM inmobi_rca.ad_events" 2>/dev/null || echo 0)"
 
-# NOTE ON ORDERING: dimension tables are loaded AFTER the overlap check below,
-# not before it. They were briefly loaded first, which meant a run that
-# correctly refused to commit overlapping events had still already inserted a
-# second copy of every dimension row. These are ReplacingMergeTree, so that
-# does not corrupt anything permanently - but dedup only happens on merge, and
-# until it does, any raw-side verification JOIN (scripts/edge_cases.sql Part 9,
-# the exact check that caught the ORDER BY corruption bug) doubles its numbers
-# and reports a false mismatch. A guard that leaves a side effect behind when
-# it refuses is not a guard. Found by running the check and chasing the
-# resulting "16 mismatched countries" alarm back to its cause.
-
-# Events land in a STAGING table first, never straight into ad_events.
-#
-# ad_events is a plain MergeTree and the insert does not deduplicate, so
-# loading a file whose days are already present silently DOUBLES every number
-# for those days - no error, no warning, every downstream metric quietly
-# wrong. This matters because PROGRESS.md and INMOBI_CONTEXT.md both tell you
-# to re-run this script for the Day-2 slice, which is only safe if that
-# package contains just the new days. Nobody has seen that package yet, so
-# that is an assumption, not a guarantee.
-#
-# Staging makes the check possible at all: the file is not mounted into the
-# container, so ClickHouse cannot inspect it with file() before loading. Once
-# it is in a table we can read its real date range and compare. The staging
-# table has no materialized view attached, so nothing reaches the rollup until
-# the overlap decision has been made.
+# Staged, never inserted straight into ad_events - ad_events does not
+# dedupe, so committing an already-loaded date range would double-count it.
 echo "==> Staging ad_events for an overlap check before committing..."
 ch_query "DROP TABLE IF EXISTS inmobi_rca.ad_events_staging"
 ch_query "CREATE TABLE inmobi_rca.ad_events_staging AS inmobi_rca.ad_events"
@@ -136,13 +89,8 @@ if [ "${EXISTING_ROWS:-0}" -gt 0 ] && [ "$FORCE" -eq 0 ]; then
     fi
 fi
 
-# Dimension tables load BEFORE the events are committed, but only once the
-# overlap check has passed - the materialized view joins against them at
-# insert time, so if events committed first the rollup would resolve every
-# segment column to '' for that batch. OPTIMIZE FINAL forces the
-# ReplacingMergeTree dedup immediately rather than waiting for a background
-# merge, so a re-run leaves exactly one row per id and raw-side verification
-# JOINs stay correct straight away.
+# Dimensions load before events commit (the MV joins against them at insert
+# time); OPTIMIZE FINAL forces dedup immediately, not on the next merge.
 echo "==> Loading dimension tables (apps, advertisers, geo_device)..."
 ch_insert inmobi_rca.apps CSVWithNames "$LOAD_DIR/apps.csv"
 ch_insert inmobi_rca.advertisers CSVWithNames "$LOAD_DIR/advertisers.csv"

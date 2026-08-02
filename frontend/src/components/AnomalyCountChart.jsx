@@ -14,10 +14,6 @@ const METRICS = [
   { value: "ctr", label: "CTR" },
 ]
 
-// Distinct per-metric color, not the normal/anomalous red-vs-primary scheme
-// MetricHistoryTimeline uses - every row this chart counts is already an
-// anomaly by definition (it comes from anomaly_candidates), so the color
-// here encodes WHICH metric, not whether something is wrong.
 const METRIC_COLOR = {
   revenue: "hsl(var(--primary))",
   fill_rate: "#f59e0b",
@@ -34,19 +30,6 @@ function segmentLabel(segmentDims) {
     .join(", ")
 }
 
-// This is a different question than MetricHistoryTimeline answers.
-// MetricHistoryTimeline shows one number per day (how far the headline
-// metric itself deviated). This shows BREADTH: how many distinct
-// segment-level anomalies fired that day, across every dimension the scan
-// checked - "was this a one-segment blip or did ten things go wrong at
-// once," which a single deviation bar can't distinguish.
-//
-// allDays/fromDay/toDay come from the parent (App.jsx) - this panel shares
-// ONE date-range control with MetricHistoryTimeline instead of owning its
-// own, and allDays is what makes the x-axis a real continuous timeline
-// (every day in range gets a slot, even ones with zero anomalies) instead of
-// only plotting the days that happen to have a candidate - the two charts
-// now line up on the same days, which they didn't before.
 export default function AnomalyCountChart({ onInvestigate, allDays = [], fromDay, toDay }) {
   const [metric, setMetric] = useState("all")
   const [all, setAll] = useState(null)
@@ -62,8 +45,6 @@ export default function AnomalyCountChart({ onInvestigate, allDays = [], fromDay
       .finally(() => setLoading(false))
   }, [])
 
-  // A previously-selected day can fall outside a newly-picked range - clear
-  // it rather than showing a drill-down for a day no longer on the chart.
   useEffect(() => {
     setSelectedDay(null)
   }, [fromDay, toDay])
@@ -73,7 +54,6 @@ export default function AnomalyCountChart({ onInvestigate, allDays = [], fromDay
     return metric === "all" ? all : all.filter((a) => a.metric === metric)
   }, [all, metric])
 
-  // day -> { total, byMetric: { metric: count }, items: [...] }
   const byDay = useMemo(() => {
     const map = new Map()
     for (const a of filtered) {
@@ -96,9 +76,6 @@ export default function AnomalyCountChart({ onInvestigate, allDays = [], fromDay
 
   const metricsInView = metric === "all" ? METRICS.slice(1).map((m) => m.value) : [metric]
 
-  // Totals scoped to what's actually visible right now, not the whole
-  // dataset - zooming the shared range should visibly change these numbers,
-  // the same way it changes the bars.
   const visibleTotal = daysInRange.reduce((sum, d) => sum + (byDay.get(d)?.total || 0), 0)
   const metricTotals = useMemo(() => {
     const totals = {}
@@ -116,7 +93,7 @@ export default function AnomalyCountChart({ onInvestigate, allDays = [], fromDay
     <Card>
       <CardHeader className="space-y-2">
         <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
+          <div className="flex flex-col gap-1">
             <CardTitle>Anomaly counts {ready && `(${visibleTotal})`}</CardTitle>
             <CardDescription>How many segment-level anomalies fired each day - breadth, not just deviation size.</CardDescription>
           </div>
@@ -133,9 +110,6 @@ export default function AnomalyCountChart({ onInvestigate, allDays = [], fromDay
             </SelectContent>
           </Select>
         </div>
-        {/* Always-visible counts, not just a hover-only legend - the point
-            raised was that color swatches alone don't say HOW MANY, so every
-            chip here now carries its own number. */}
         {ready && (
           <div className="flex flex-wrap items-center gap-3">
             {metricsInView.map((m) => (
@@ -177,12 +151,6 @@ export default function AnomalyCountChart({ onInvestigate, allDays = [], fromDay
                         onClick={() => setSelectedDay(isSelected ? null : d)}
                         title={total > 0 ? `${d}: ${total} anomal${total === 1 ? "y" : "ies"}` : `${d}: none`}
                       >
-                        {/* Stacked segments, one per metric present that day - a
-                            day with 3 metrics firing at once reads visibly
-                            "busier" than a day with 1, at a glance. Days with
-                            zero anomalies still get a slot on the axis (a thin
-                            baseline tick, not a gap), so this chart lines up
-                            with MetricHistoryTimeline's continuous day axis. */}
                         {total === 0 ? (
                           <span className="h-px w-full bg-muted-foreground/30" />
                         ) : (
@@ -218,10 +186,6 @@ export default function AnomalyCountChart({ onInvestigate, allDays = [], fromDay
               </div>
             </div>
 
-            {/* Clicking a bar drills into exactly which segments fired that
-                day - a count alone tells you something happened, not what,
-                and every one of these is one click from a real
-                investigation. */}
             {selected && (
               <div className="mt-3 border-t pt-3">
                 <div className="mb-1.5 text-xs font-semibold">

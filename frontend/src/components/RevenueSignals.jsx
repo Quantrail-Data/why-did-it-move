@@ -5,10 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button"
 import { getRevenueSignals } from "@/api/client"
 
-// One entry per detector in backend/app/revenue_signals.py. The subtitle
-// states what the threshold scan cannot see, because that is the whole
-// reason each detector exists - these are different questions, not a looser
-// threshold on the same one.
 const DETECTORS = [
   {
     key: "sustained_drift",
@@ -60,8 +56,9 @@ export default function RevenueSignals({ day, onInvestigate }) {
     <Card>
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
+          <div className="flex flex-col gap-1">
             <CardTitle>Revenue signals {data && `(${data.total})`}</CardTitle>
+
             <CardDescription>
               Revenue incident shapes the day-grain threshold scan cannot express
             </CardDescription>
@@ -84,7 +81,7 @@ export default function RevenueSignals({ day, onInvestigate }) {
             {DETECTORS.map(({ key, label, icon: Icon, blurb }) => {
               const items = data[key] || []
               return (
-                <div key={key}>
+                <div key={key} className="w-[98%]">
                   <div className="flex items-center gap-1.5 text-xs font-semibold">
                     <Icon className="h-3.5 w-3.5" />
                     {label}
@@ -92,9 +89,6 @@ export default function RevenueSignals({ day, onInvestigate }) {
                   </div>
                   <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{blurb}</p>
                   {items.length === 0 ? (
-                    // An empty detector is a result, not a blank space - it
-                    // means this shape of incident is genuinely absent, which
-                    // is worth stating rather than leaving ambiguous.
                     <p className="mt-1 text-[11px] italic text-muted-foreground">
                       None found in the loaded range.
                     </p>

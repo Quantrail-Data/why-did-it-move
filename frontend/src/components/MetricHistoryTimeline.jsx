@@ -15,11 +15,6 @@ const METRICS = [
 const REAL_METRICS = METRICS.filter((m) => m.value !== "all").map((m) => m.value)
 const METRIC_LABEL = Object.fromEntries(METRICS.map((m) => [m.value, m.label]))
 
-// Y-axis label column and chart column share this exact grid so the x-axis
-// day labels below line up with the bars above them by construction, not by
-// a guessed padding value (the earlier version used a hand-calculated
-// pl-[...] that silently drifted out of alignment whenever the y-axis label
-// text width changed).
 const GRID_COLUMNS = "2.5rem 1fr"
 
 const LEGEND = [
@@ -29,15 +24,9 @@ const LEGEND = [
 ]
 
 function formatDay(iso) {
-  return iso.slice(5) // "2026-06-09" -> "06-09"
+  return iso.slice(5)
 }
 
-// "All metrics" fetches every real metric's history in parallel and, for
-// each day, keeps whichever metric deviated most that day (checked against
-// that metric's OWN dynamic threshold, not a shared one) - a "was anything
-// off this day" view, not five cramped bars per day. Single-metric mode
-// just tags every point with that one metric/threshold so the rest of the
-// component doesn't need two code paths.
 function normalizeAllMetrics(results) {
   const dayCount = results[0]?.days?.length || 0
   const days = []
@@ -55,30 +44,6 @@ function normalizeAllMetrics(results) {
   return { days }
 }
 
-// Hand-built diverging bar chart, not Recharts - Recharts' <BarChart> with a
-// signed (+/-) dataKey rendered every bar at a sub-pixel height regardless
-// of its real value here (confirmed directly in the DOM: bars ~1px tall for
-// values up to -45%, no combination of explicit YAxis domain fixed it).
-// This dataset is simple enough (one signed value per day, fixed category
-// axis) that a plain absolutely-positioned-div chart is both more reliable
-// and fully within our control - no library black box.
-//
-// Replaces a manual metric+date picker: every day in the loaded range gets
-// its own bar (not just the days the scan happened to flag), colored red
-// once it crosses the relevant metric's own dynamic threshold. Clicking any
-// bar - flagged or not - runs the same investigate() pipeline a
-// flagged-anomaly click would, so an unflagged day is still one click away,
-// not gated behind typing a date. Doubles as "has anything misbehaved
-// before, and when" at a glance.
-//
-// fromDay/toDay are now controlled by the parent (App.jsx), not owned here -
-// this panel shares ONE date-range control with AnomalyCountChart instead of
-// each carrying its own from/to pair, since both answer "what happened over
-// time" and a reader zooming into a window wants both to move together, not
-// two separate controls that can drift out of sync. onDaysLoaded reports the
-// full fetched day list upward once per fetch, since the parent needs it to
-// know the range's actual min/max bounds and AnomalyCountChart needs the
-// same list to build its own continuous timeline.
 export default function MetricHistoryTimeline({ onInvestigate, investigating, fromDay, toDay, onDaysLoaded }) {
   const [metric, setMetric] = useState("all")
   const [data, setData] = useState(null)
@@ -94,8 +59,8 @@ export default function MetricHistoryTimeline({ onInvestigate, investigating, fr
       metric === "all"
         ? Promise.all(REAL_METRICS.map((m) => getMetricHistory({ metric: m }))).then(normalizeAllMetrics)
         : getMetricHistory({ metric }).then((res) => ({
-            days: res.days.map((d) => ({ ...d, metric, pct_threshold: res.pct_threshold })),
-          }))
+          days: res.days.map((d) => ({ ...d, metric, pct_threshold: res.pct_threshold })),
+        }))
 
     fetchNormalized
       .then((res) => {
@@ -104,9 +69,6 @@ export default function MetricHistoryTimeline({ onInvestigate, investigating, fr
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-    // onDaysLoaded intentionally excluded - App.jsx defines it fresh each
-    // render, and it would otherwise re-trigger this fetch on every parent
-    // render instead of only on metric change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [metric])
 
@@ -114,13 +76,12 @@ export default function MetricHistoryTimeline({ onInvestigate, investigating, fr
   const days = fullRange.filter((d) => (!fromDay || d.day >= fromDay) && (!toDay || d.day <= toDay))
 
   const maxAbsDeviation = Math.max(0.05, ...days.map((d) => Math.abs(d.pct_deviation ?? 0)))
-  // Sparse labels so however many days are in view, they don't overlap.
   const labelStride = Math.max(1, Math.ceil(days.length / 7))
 
   return (
     <Card>
       <CardHeader className="space-y-2">
-        <div>
+        <div className="flex flex-col gap-1">
           <CardTitle>Anomaly history</CardTitle>
           <CardDescription>Click any day - flagged or not - to investigate it.</CardDescription>
         </div>
@@ -208,11 +169,10 @@ export default function MetricHistoryTimeline({ onInvestigate, investigating, fr
 
             <p className="mt-2 h-4 text-xs text-muted-foreground">
               {hovered
-                ? `${hovered.day}${metric === "all" && hovered.metric ? ` · ${METRIC_LABEL[hovered.metric]}` : ""}: ${
-                    hovered.pct_deviation != null
-                      ? `${hovered.pct_deviation >= 0 ? "+" : ""}${(hovered.pct_deviation * 100).toFixed(1)}% vs baseline`
-                      : "no baseline yet"
-                  }`
+                ? `${hovered.day}${metric === "all" && hovered.metric ? ` · ${METRIC_LABEL[hovered.metric]}` : ""}: ${hovered.pct_deviation != null
+                  ? `${hovered.pct_deviation >= 0 ? "+" : ""}${(hovered.pct_deviation * 100).toFixed(1)}% vs baseline`
+                  : "no baseline yet"
+                }`
                 : "Hover a bar for the exact number, click to investigate."}
             </p>
           </div>

@@ -1,37 +1,8 @@
-"""Revenue-specific detectors for incident shapes the day-grain threshold
-scan is structurally incapable of seeing.
-
-detect.py asks one question per segment-day: "is today far from this
-segment's trailing same-weekday baseline?" That catches a cliff. It cannot
-catch three real and common revenue incident shapes, and the gap is a
-property of the test, not of the tuning - lowering the threshold would not
-find them, it would only add noise:
-
-1. SUSTAINED DRIFT. A segment down 8% every day for a week is a larger
-   revenue loss than a one-day -30% blip, but no single day clears a ~24%
-   cutoff, so nothing is ever flagged. Worse, the trailing baseline slowly
-   follows the decline, so the deviation shrinks the longer the problem
-   lasts - a slow bleed actively hides itself from a same-weekday comparison.
-
-2. DISAPPEARED SEGMENT. A segment that earned steadily and then goes to
-   exactly zero is the single clearest revenue incident there is, and it is
-   the one case the existing scan provably cannot report: with revenue 0 the
-   deviation is -100%, but if the segment stops producing rows entirely
-   there is no row to evaluate, and where a baseline is 0 the
-   `baseline_avg == 0` guard drops it. Absence has to be searched for
-   explicitly against a day x segment grid; it never arrives on its own.
-
-3. MIX SHIFT. Total revenue flat, but a segment's SHARE of it moved sharply -
-   one segment collapsing while another absorbs the demand. The absolute
-   deviation can sit under threshold on both sides while the composition of
-   the business has changed materially. Found on the real data: os_version
-   'Android 15' lost 4.2 percentage points of total revenue share across
-   2026-06-23..25, and category 'finance' lost ~2.3pp across 06-19..22.
-
-All three run entirely in ClickHouse, on the same rollup, using the same
-robust trailing-same-weekday baseline as everything else (baseline.py). The
-LLM is not involved in detection here any more than it is in detect.py.
-"""
+"""Revenue detectors for incident shapes detect.py's day-grain threshold
+scan structurally can't see: sustained multi-day drift, a segment
+collapsing to zero, and a mix-shift in revenue composition. All ClickHouse,
+same robust baseline as everywhere else - see EDGE_CASES.md for the full
+reasoning and the measured findings each detector surfaced."""
 from typing import Optional
 
 from . import baseline as baseline_module
@@ -39,19 +10,9 @@ from . import config, coverage as coverage_module, metrics
 
 METRIC = "revenue"
 
-# A sustained drift is flagged on a LOWER per-day bar than a single-day
-# spike, because the evidence is the consistency rather than the magnitude:
-# every day in the window must move the same way. Requiring both a
-# consistent direction across N days and a meaningful average displacement
-# is a much stronger joint condition than either alone, which is why the
-# per-day component can safely sit below the single-day cutoff.
 DRIFT_MIN_DAYS = int(getattr(config, "DRIFT_MIN_DAYS", 3))
 DRIFT_MIN_AVG_DEVIATION = float(getattr(config, "DRIFT_MIN_AVG_DEVIATION", 0.05))
-# Share-of-total movement is in percentage POINTS, not percent - a segment
-# going from 9.6% to 5.4% of revenue is a 4.2 point shift.
 SHARE_SHIFT_MIN_POINTS = float(getattr(config, "SHARE_SHIFT_MIN_POINTS", 0.02))
-# A segment must have been earning at least this fraction of total revenue
-# for its disappearance to be worth reporting rather than noise vanishing.
 COLLAPSE_MIN_BASELINE_SHARE = float(getattr(config, "COLLAPSE_MIN_BASELINE_SHARE", 0.005))
 
 
@@ -61,26 +22,10 @@ def _dim_union(select_template: str, dimensions) -> str:
     )
 
 
-# --- 1. Sustained drift ----------------------------------------------------
-# Per segment-day deviation first (same robust baseline as everywhere else),
-# then a second window over the trailing DRIFT_MIN_DAYS *calendar* days
-# asking two things at once: is the average displacement material, and did
-# every day in that window move in the same direction.
-#
-# EXCESS drift, not raw drift. The first version of this measured each
-# segment's drift against its own baseline only, and returned 336 hits on the
-# known batch - because 2026-06-21 is a genuine dataset-wide -44.8% day, and
-# a whole-business movement makes every segment in every dimension drift
-# together. 336 "findings" for one root cause is the same crying-wolf failure
-# this project already fixed once in the threshold scan.
-#
-# The question worth asking is not "did this segment move" but "did this
-# segment move MORE than the business as a whole." So the whole dataset is
-# unioned in as a synthetic '__overall__' dimension, gets its run statistics
-# computed by the identical window, and every real segment is then scored on
-# the gap between its own drift and the overall drift on the same day. A
-# segment merely carried along by a global dip nets out to roughly zero and
-# is correctly not reported.
+# EXCESS drift, not raw drift: scoring each segment against its OWN baseline
+# alone returned 336 hits (a global -44.8% day drags every segment together).
+# Scoring the gap between a segment's drift and the business-overall drift on
+# the same day cuts that to 24 real findings.
 _DRIFT_QUERY = """
     SELECT
         seg.dim, seg.segment_value, seg.day,
@@ -147,10 +92,6 @@ _DRIFT_DIM_SELECT = """
 """
 
 
-# --- 2. Disappeared / collapsed segment ------------------------------------
-# Built against an explicit day x segment grid so a segment that stops
-# producing rows entirely is still evaluated. `revenue` comes back 0 for a
-# missing combination rather than the row simply not existing.
 _COLLAPSE_QUERY = """
     SELECT scored.dim, scored.segment_value, scored.day, scored.revenue, scored.baseline_revenue
     FROM (
@@ -175,10 +116,8 @@ _COLLAPSE_QUERY = """
     ORDER BY scored.baseline_revenue - scored.revenue DESC
 """
 
-# The day x segment grid is the whole point: a LEFT JOIN from every
-# (day, segment) combination onto the actual rollup rows means a segment
-# that stopped producing rows entirely still appears, with revenue 0,
-# instead of silently not existing.
+# Day x segment grid via CROSS JOIN + LEFT JOIN so a segment that stops
+# producing rows entirely still appears, with revenue 0.
 _COLLAPSE_DIM_SELECT = """
     SELECT {dim_name} AS dim, grid.segment_value AS segment_value, grid.day AS day,
            coalesce(actuals.revenue, 0) AS revenue
@@ -198,7 +137,6 @@ _COLLAPSE_DIM_SELECT = """
 """
 
 
-# --- 3. Mix / share shift --------------------------------------------------
 _SHARE_QUERY = """
     SELECT dim, segment_value, day, share, baseline_share, share - baseline_share AS share_delta
     FROM (
@@ -357,14 +295,6 @@ def detect_share_shifts(client, hour_cutoff=None) -> list:
 
 
 def all_signals(client, hour_cutoff=None, volume_floor=None) -> dict:
-    """Every revenue-specific detector, run together.
-
-    Returned as its own result rather than merged into anomaly_candidates:
-    these answer a different question ("what shape of revenue problem is
-    present") than the threshold scan ("did this segment-day move"), carry
-    different evidence fields, and conflating them would make the flag count
-    meaningless. The UI lists them as a separate, labelled panel.
-    """
     drift = detect_sustained_drift(client, hour_cutoff, volume_floor)
     collapsed = detect_collapsed_segments(client, hour_cutoff)
     shifts = detect_share_shifts(client, hour_cutoff)

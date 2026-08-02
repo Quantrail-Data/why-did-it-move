@@ -1,12 +1,3 @@
-// Builds a self-contained PDF report from an investigation result - the
-// artifact for the unseen-incident submission requirement ("your submission
-// must include the diagnosis, the numbers behind it, and the trace that
-// proves your system generated them"). Every number here comes straight
-// from `result`, which the backend already computed from ClickHouse -
-// nothing is re-derived or reformatted with new math here. The final
-// appendix dumps the exact same numbers as raw JSON specifically so a
-// reader can check every sentence in the diagnosis against a literal
-// number, not just trust the prose.
 import { jsPDF } from "jspdf"
 import autoTable from "jspdf-autotable"
 
@@ -17,11 +8,6 @@ function pct(v) {
   return v == null ? "n/a" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`
 }
 
-// Rounded to 4 decimal places, same convention InvestigationDetail.jsx's
-// on-screen comparison table already uses, then thousand-separated - not
-// just String(v). Raw ClickHouse floats like 234.55215700000136 are exact
-// but visually wreck a table (one cell far wider than its neighbors reads
-// as "misaligned" even though nothing is technically overlapping).
 function num(v) {
   if (v == null) return "n/a"
   const rounded = Math.round(v * 10000) / 10000
@@ -69,20 +55,26 @@ export function buildInvestigationPdf(result, langfuseTraceUrl) {
       body,
       theme: "grid",
       styles: { fontSize: 9, cellPadding: 2 },
-      headStyles: { fillColor: [124, 58, 237] }, // matches the app's purple accent
+      headStyles: { fillColor: [124, 58, 237] },
     })
     y = doc.lastAutoTable.finalY + 6
   }
 
-  // Title
   doc.setFont("helvetica", "bold")
   doc.setFontSize(16)
   doc.text("Why Did It Move - Investigation Report", MARGIN, y)
   y += 8
   doc.setFont("helvetica", "normal")
   doc.setFontSize(10)
-  doc.text(`Metric: ${result.metric}    Day: ${result.day}`, MARGIN, y)
-  y += 5
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  doc.text(`Metric: ${result.metric}`, MARGIN, y);
+
+  doc.text(`Day: ${result.day}`, pageWidth - MARGIN, y, {
+    align: "right",
+  });
+
+  y += 7;
   doc.text(`Generated: ${new Date().toISOString()}`, MARGIN, y)
   y += 8
 
@@ -136,9 +128,6 @@ export function buildInvestigationPdf(result, langfuseTraceUrl) {
     y += 6
   }
 
-  // Raw evidence appendix - the literal JSON the LLM was given to narrate,
-  // nothing more. Lets a reader verify every number in the prose above
-  // against a specific field here, not just trust the summary.
   doc.addPage()
   y = MARGIN
   heading("Appendix: raw cited numbers (JSON)")

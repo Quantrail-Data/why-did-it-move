@@ -9,12 +9,6 @@ function ms(v) {
   return v >= 1000 ? `${(v / 1000).toFixed(2)}s` : `${Math.round(v)}ms`
 }
 
-// p95, not a single run's timing - that lives on every diagnosis already
-// (InvestigationDetail's LatencyBar) and answers "how long did THIS
-// diagnosis take." This answers a different question: "how long does a
-// diagnosis reliably take," across every /api/investigate call the system
-// has actually logged (backend/app/timing.py -> request_latencies table).
-// One lucky fast run proves nothing about the tail; p95 does.
 export default function LatencyStats({ refreshKey }) {
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -28,14 +22,11 @@ export default function LatencyStats({ refreshKey }) {
       .finally(() => setLoading(false))
   }, [])
 
-  // Reloads whenever a new investigation finishes (parent bumps refreshKey),
-  // so the sample count and p95 stay current without a manual click every
-  // time - but the button stays for "I just want to check again."
   useEffect(() => {
     load()
   }, [load, refreshKey])
 
-  if (error) return null // silent - this is a supplementary stat, not core functionality
+  if (error) return null
   if (!loading && (!stats || stats.n === 0)) {
     return (
       <div className="mb-4 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -59,7 +50,6 @@ export default function LatencyStats({ refreshKey }) {
             p50 <span className="font-medium tabular-nums">{ms(stats.p50_ms)}</span>
           </span>
           <span>
-            {/* The headline number - the one that answers "is this fast." */}
             p95 <span className="font-semibold tabular-nums text-foreground">{ms(stats.p95_ms)}</span>
           </span>
           <span>
@@ -69,10 +59,6 @@ export default function LatencyStats({ refreshKey }) {
             (ClickHouse p95 <span className="tabular-nums">{ms(stats.p95_clickhouse_ms)}</span> · LLM p95{" "}
             <span className="tabular-nums">{ms(stats.p95_llm_ms)}</span>)
           </span>
-          {/* n is not decoration - a p95 off 3 samples is close to just the
-              max, and shouldn't be read with the same confidence as one off
-              300. Same honesty this project already applies to detection
-              thresholds' n_samples/dynamic fields. */}
           <span className="text-muted-foreground">
             across <span className="font-medium">{stats.n}</span> run{stats.n === 1 ? "" : "s"}
           </span>

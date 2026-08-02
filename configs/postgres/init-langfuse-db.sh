@@ -1,8 +1,5 @@
 #!/bin/bash
-# Creates the Langfuse relational/metadata database on the shared PostgreSQL
-# instance. (Previously also provisioned a pgvector database for LibreChat's
-# RAG API - removed along with LibreChat from the architecture; Langfuse is
-# the only consumer of this Postgres instance now.)
+# Creates the Langfuse relational/metadata database on the shared Postgres.
 
 set -e
 

@@ -1,13 +1,6 @@
-"""The optional chat feature: free-text question -> structured lookup ->
-narrated answer. Reuses investigate.py's query functions directly rather
-than duplicating query logic - this endpoint exists specifically because it
-was cheap to add once the core pipeline existed, per the MVP-scope decision.
-
-Accepts an optional `context` (the currently-open investigation's
-metric/day/segment) so an unqualified follow-up like "why was CTR normal
-though?" resolves against whatever the user was just looking at, instead of
-silently defaulting to the latest loaded day every time.
-"""
+"""Chat: free-text question -> structured lookup -> narrated answer, reusing
+investigate.py's query functions. Optional `context` (the open
+investigation's metric/day/segment) resolves unqualified follow-ups."""
 import json
 from datetime import date
 from typing import Optional
@@ -19,10 +12,6 @@ _SCHEMA_HINT = (
     "Dimensions available: " + ", ".join(metrics.DIMENSIONS) + "."
 )
 
-# Static, not LLM-generated - a canned refusal can't be talked out of its
-# boundary by a cleverly-worded question the way an LLM reply could be, and
-# it skips the narrate() call entirely (one less place a model could try to
-# be "helpful" and answer the off-topic question anyway).
 _OUT_OF_SCOPE_ANSWER = (
     "That's outside what I can help with here. I can only answer questions about this "
     "ad-metrics investigation - revenue, fill rate, render rate, eCPM, CTR, and the "

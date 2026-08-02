@@ -5,10 +5,6 @@ const STATUS_STYLES = {
   red: { dot: "bg-red-500", badge: "destructive", label: "Anomalous" },
   amber: { dot: "bg-amber-500", badge: "warning", label: "Watch" },
   green: { dot: "bg-emerald-500", badge: "success", label: "Normal" },
-  // "Not evaluated" is deliberately NOT "Normal". A day we could not judge
-  // (no trailing same-weekday history, or too little of it to trust) must
-  // not be rendered as a clean bill of health - the tooltip carries the
-  // specific reason from the backend. See backend/app/coverage.py.
   gray: { dot: "bg-muted-foreground/40", badge: "outline", label: "Not evaluated" },
 }
 
@@ -18,6 +14,16 @@ const METRIC_LABELS = {
   render_rate: "Render rate",
   ecpm: "eCPM",
   ctr: "CTR",
+}
+
+const PERCENT_METRICS = new Set(["fill_rate", "render_rate", "ctr"])
+const CURRENCY_METRICS = new Set(["revenue", "ecpm"])
+
+function formatMetricValue(metric, value) {
+  if (value == null) return "-"
+  if (PERCENT_METRICS.has(metric)) return `${(value * 100).toFixed(2)}%`
+  if (CURRENCY_METRICS.has(metric)) return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return value.toLocaleString(undefined, { maximumFractionDigits: 4 })
 }
 
 export default function MetricTree({ tree, loading }) {
@@ -42,7 +48,7 @@ export default function MetricTree({ tree, loading }) {
             </CardHeader>
             <CardContent className="p-3 pt-0">
               <div className="truncate text-base font-semibold">
-                {node.actual != null ? node.actual.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "-"}
+                {formatMetricValue(node.metric, node.actual)}
               </div>
               <div className="mt-1 flex items-center justify-between gap-1">
                 <span className="truncate text-[11px] text-muted-foreground">

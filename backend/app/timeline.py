@@ -1,12 +1,9 @@
 """Hour-by-hour playback data for one metric/day, optionally overlaid with
-one specific segment - powers the frontend's "replay the incident" view
-(the problem statement's own suggested demo language: "Replay an incident
-end to end"). Reuses hourly_segment_metrics directly; no new tables, no new
-ingestion - the rollup already has hour grain.
-"""
+one segment - powers the "replay this incident" view."""
 from datetime import date
 from typing import Optional
 
+from . import baseline as baseline_module
 from . import config, db, metrics
 
 _TIMELINE_QUERY = """
@@ -28,10 +25,7 @@ _TIMELINE_QUERY = """
         hour,
         hod,
         {metric_expr} AS actual_value,
-        avg({metric_expr}) OVER (
-            PARTITION BY hod, toDayOfWeek(day) ORDER BY day
-            ROWS BETWEEN {trailing} PRECEDING AND 1 PRECEDING
-        ) AS baseline_avg
+        {baseline_cols}
     FROM hourly
     ORDER BY hour
 """
@@ -58,17 +52,23 @@ def _hourly_series(
     query = _TIMELINE_QUERY.format(
         where_clause=where_clause,
         metric_expr=metrics.METRIC_EXPRESSIONS[metric_name],
-        trailing=config.TRAILING_WEEKS,
+        baseline_cols=baseline_module.baseline_select(
+            metrics.METRIC_EXPRESSIONS[metric_name], "hod, toDayOfWeek(day)", config.TRAILING_WEEKS
+        ),
     )
     rows = client.query(query, parameters=params).result_rows
 
     points = []
     day_str = day.isoformat()
-    for hour, hod, actual, baseline in rows:
+    for hour, hod, actual, baseline, _mean, _stddev, baseline_n in rows:
         if hour.date().isoformat() != day_str:
             continue
         actual_ok = not metrics.is_invalid_number(actual)
-        baseline_ok = not metrics.is_invalid_number(baseline) and baseline != 0
+        baseline_ok = (
+            not metrics.is_invalid_number(baseline)
+            and baseline != 0
+            and (baseline_n or 0) >= config.MIN_BASELINE_SAMPLES
+        )
         pct_dev = (actual - baseline) / baseline if actual_ok and baseline_ok else None
         points.append(
             {
@@ -97,11 +97,6 @@ def get_timeline(
         _hourly_series(client, metric_name, day, dim_col, value, dim_col2, value2) if dim_col and value else None
     )
 
-    # Threshold must be this metric's own live-computed one, the same number
-    # detect.py/investigate.py flag against - it was previously the static
-    # config constant, so playback could mark an "anomaly hour" that the rest
-    # of the pipeline did not consider anomalous at all (and vice versa) on
-    # the same metric and day.
     from . import thresholds as thresholds_module
 
     metric_thresholds = thresholds_module.compute_metric_thresholds(client, [metric_name])

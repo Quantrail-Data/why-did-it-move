@@ -1,17 +1,5 @@
-"""Langfuse tracing wrapper. Degrades to a no-op if Langfuse is unreachable
-(e.g. the `langfuse` Compose profile isn't up) rather than crashing the
-pipeline - tracing is required for judging credit, not for the pipeline to
-function during dev.
-
-Every trace and span carries explicit input/output, not just metadata - a
-judge opening the top-level trace should immediately see what went in and
-what came out, without having to drill into every child span.
-
-NOTE: written against the Langfuse Python SDK v2 trace()/span() API
-(langfuse==2.53.9 in requirements.txt). Verify method signatures against
-whatever version actually gets installed - the SDK's tracing API has moved
-between major versions.
-"""
+"""Langfuse tracing wrapper - degrades to a no-op if Langfuse is unreachable
+rather than crashing the pipeline. Written against SDK v2's trace()/span()."""
 import json
 import logging
 

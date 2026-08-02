@@ -1,25 +1,10 @@
--- Empirical justification for the detection thresholds in backend/app/config.py
--- (MIN_VOLUME_FLOOR, PCT_DEVIATION_THRESHOLD, Z_SCORE_THRESHOLD).
---
--- These numbers are NOT specified anywhere in the InMobi problem statement - it
--- only prescribes the baseline *method* (trailing same-weekday average). The
--- sensitivity is our own calibration, and this file is the evidence for it:
--- instead of asserting "30% deviation is a good cutoff," we measure what
--- "normal" day-to-day noise actually looks like in this exact dataset and set
--- the threshold above that empirical noise floor. Re-run this any time the
--- loaded data changes (e.g. after the Day-2 unseen-incident slice lands) to
--- confirm the thresholds are still appropriately calibrated for the new data.
+-- Empirical justification for backend/app/config.py's detection thresholds.
+-- Re-run any time loaded data changes.
 --
 -- Run: docker compose exec -T clickhouse clickhouse-client --user ro --password <pw> --multiquery < scripts/validate_thresholds.sql
 
--- ============================================================================
--- PART 1: What does "normal" day-to-day deviation actually look like?
--- Unions the same trailing-same-weekday-baseline computation detect.py uses,
--- across all 9 dimensions, for revenue (the highest-weight metric) - no
--- threshold filter applied, so this is the RAW distribution of deviations a
--- well-populated segment shows on an ordinary day. This is what "noise" is
--- made of in this dataset.
--- ============================================================================
+-- PART 1: raw distribution of day-to-day deviation across all 9 dimensions
+-- for revenue, no threshold filter - what "normal noise" looks like here.
 WITH all_devs AS (
     SELECT (revenue - baseline_avg) / baseline_avg AS pct_dev, requests
     FROM (
@@ -141,13 +126,8 @@ FROM all_devs
 WHERE requests >= 1000
 FORMAT PrettyCompact;
 
--- ============================================================================
--- PART 2: Does low volume make ratio metrics noisier? (justifies MIN_VOLUME_FLOOR)
--- Buckets the SAME deviations above by request volume and shows stddev per
--- bucket. If low-volume buckets show materially higher stddev, that's the
--- empirical justification for excluding them below the floor - they're not
--- "differently behaved," they're statistically noisier from small-N alone.
--- ============================================================================
+-- PART 2: deviation stddev by volume bucket - justifies MIN_VOLUME_FLOOR if
+-- low-volume buckets show materially higher variance.
 WITH daily AS (
     SELECT toDate(hour) AS day, country AS segment_value,
            countMerge(requests) AS requests, sumMerge(revenue) AS revenue
@@ -169,15 +149,8 @@ GROUP BY volume_bucket
 ORDER BY volume_bucket
 FORMAT PrettyCompact;
 
--- ============================================================================
--- PART 3: Sanity check - does the same-weekday baseline correctly NOT flag
--- pure weekly seasonality? The glossary explicitly warns "a flat global
--- average makes every weekend look like an anomaly" and that at least one
--- planted movement is pure seasonality that should be ruled out. This
--- confirms our baseline choice (same-weekday trailing average, not a flat
--- average) handles that trap by construction - every weekend gets compared
--- to trailing weekends, not to weekdays.
--- ============================================================================
+-- PART 3: same-weekday baseline should not flag pure weekly seasonality -
+-- every weekend compares to trailing weekends, not to weekdays.
 SELECT
     'PART 3: overall revenue by day-of-week (raw, no baseline)' AS check_name,
     toDayOfWeek(day) AS day_of_week,
@@ -191,10 +164,7 @@ GROUP BY day_of_week
 ORDER BY day_of_week
 FORMAT PrettyCompact;
 
--- ============================================================================
--- PART 4: Current threshold's actual flag rate on the known batch (sanity
--- number to compare against future reruns, e.g. after the unseen data lands).
--- ============================================================================
+-- PART 4: current flag rate - sanity number to compare against future reruns.
 SELECT
     'PART 4: current open anomaly_candidates count' AS check_name,
     count(*) AS open_candidates,

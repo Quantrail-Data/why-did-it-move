@@ -19,13 +19,6 @@ export function listAnomalyCandidates({ day, status = "open" } = {}) {
   return request(`/api/anomalies?${params.toString()}`)
 }
 
-// Every anomaly the system has ever detected, across every day and every
-// status (open, investigated, dismissed) - the raw material for the
-// anomaly-count-by-metric chart. Deliberately no server-side aggregation:
-// the whole loaded batch is a few hundred rows at most, so grouping by
-// day/metric client-side is cheap and needs no new backend endpoint - same
-// call as listAnomalyCandidates, just with the "all" status sentinel and no
-// day filter.
 export function getAllAnomaliesEver() {
   return request("/api/anomalies?status=all")
 }
@@ -65,6 +58,16 @@ export function getMetricHistory({ metric }) {
 export function getLatencyStats({ endpoint = "investigate" } = {}) {
   const params = new URLSearchParams({ endpoint })
   return request(`/api/latency-stats?${params.toString()}`)
+}
+
+export function getDayHourScan({ metric, day }) {
+  const params = new URLSearchParams({ metric, day })
+  return request(`/api/day-hour-scan?${params.toString()}`)
+}
+
+export function getHourDrilldown({ metric, hour }) {
+  const params = new URLSearchParams({ metric, hour })
+  return request(`/api/hour-drilldown?${params.toString()}`)
 }
 
 export function getRevenueSignals({ day } = {}) {

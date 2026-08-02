@@ -4,10 +4,6 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { ask } from "@/api/client"
 
-// Plain content component, meant to render inside a Dialog (see App.jsx) -
-// no longer a fixed-position floating widget. It used to live bottom-right
-// to avoid being pushed off-screen by page content; a Dialog can't be
-// pushed by anything, so that workaround is gone along with the wrapper.
 export default function ChatBox({ context }) {
   const [question, setQuestion] = useState("")
   const [messages, setMessages] = useState([])
@@ -51,13 +47,6 @@ export default function ChatBox({ context }) {
               : 'Try: "What was fill rate for Android in APAC yesterday?"'}
           </p>
         )}
-        {/* Each message is a flex row so the bubble can shrink-wrap to its
-            own content (w-fit) instead of stretching to max-w regardless of
-            length - a 2-character "hi" used to render as a near-full-width
-            bar because the bubble div itself had no width constraint other
-            than max-width. justify-end/start does the left/right alignment
-            instead of ml-auto on a block element, which only worked by
-            accident when the bubble happened to be wide already. */}
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
             <div

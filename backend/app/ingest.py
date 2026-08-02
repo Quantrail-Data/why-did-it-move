@@ -1,16 +1,5 @@
-"""Incremental ingest: the complement to scripts/load_data.sh's bulk file
-drop. Some data (e.g. the Day-2 unseen-incident slice) may not arrive as a
-file at all - it could be pushed event-by-event or in small batches from
-wherever it's coming from. This gives that path a plain HTTP insert instead
-of assuming a shell/file-system step is always available.
-
-Writes straight into ad_events via the admin client, the same insert shape
-detect.py/investigate.py already use for their own tables. The existing
-mv_hourly_segment_metrics materialized view fires on any insert into
-ad_events regardless of path, so hourly_segment_metrics - and everything
-downstream: scan, investigate, timeline, thresholds - stays correct with no
-other code change, whether a row arrived via bulk load or this endpoint.
-"""
+"""Incremental ingest via HTTP - the complement to scripts/load_data.sh's
+bulk file drop, for data that arrives event-by-event instead of as a file."""
 from . import db, schemas
 
 _COLUMNS = [

@@ -10,9 +10,6 @@ import ChatBox from "@/components/ChatBox"
 import LatencyBar from "@/components/LatencyBar"
 import { buildInvestigationPdf, downloadPdf } from "@/lib/report"
 
-// Same colors as the badges above (warning=amber for factors, destructive=
-// red for the segment/combo) so the chart reads as one system with the text
-// above it, not a disconnected extra widget.
 const KIND_COLOR = {
   overall: "hsl(var(--primary))",
   factor: "#f59e0b",
@@ -20,10 +17,6 @@ const KIND_COLOR = {
   combo: "#f43f5e",
 }
 
-// Every number the prose describes, as one comparable list - the "what
-// moved and by how much, all at once" view the text/badges above can't give
-// at a glance. Built straight from already-fetched result fields, no new
-// backend call.
 function buildComparisonRows(result) {
   const rows = []
   if (result.overall) {
@@ -100,9 +93,6 @@ export default function InvestigationDetail({ result, loading }) {
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Disclosed before the diagnosis, not buried under it - if the day
-            is only partly loaded, that changes how every number below should
-            be read, so it cannot be a footnote. See backend/app/coverage.py. */}
         {result.data_coverage_note && (
           <div className="flex gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
             <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-amber-600" />
@@ -114,10 +104,6 @@ export default function InvestigationDetail({ result, loading }) {
 
         <LatencyBar timings={result.timings} />
 
-        {/* Confidence and the evidence behind it, side by side. baseline_n is
-            shown because a -45% move measured against 4 prior same-weekdays
-            and the same -45% against 2 are not equally strong claims, and the
-            confidence score is explicitly discounted for the difference. */}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
           {result.confidence != null && (
             <span>
@@ -167,12 +153,6 @@ export default function InvestigationDetail({ result, loading }) {
               Overall vs. factors vs. segment - actual vs. baseline
             </h4>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              {/* Hand-built, not Recharts - Recharts' <BarChart> rendered
-                  bars with wildly inconsistent widths for very similar
-                  values here (confirmed directly in the DOM), the same
-                  issue found and worked around in MetricHistoryTimeline.
-                  A short diverging bar list doesn't need a charting
-                  library's full feature set, and this is reliable. */}
               <div className="space-y-2 py-1">
                 {comparisonRows.map((r) => {
                   const widthPct = Math.min(50, (Math.abs(r.pct_deviation) / maxAbsRowDeviation) * 50)
@@ -262,11 +242,6 @@ export default function InvestigationDetail({ result, loading }) {
           </Button>
         </div>
 
-        {/* Every number above comes from this exact JSON - the same object
-            ClickHouse computed and handed to the LLM to narrate, nothing
-            added or reformatted. Expandable so it doesn't clutter the
-            default view, but one click away for anyone who wants to verify
-            a specific figure instead of trusting the prose. */}
         <div className="border-t pt-3">
           <button
             type="button"
@@ -284,9 +259,6 @@ export default function InvestigationDetail({ result, loading }) {
         </div>
       </CardContent>
 
-      {/* A dialog, not an inline expansion - a bigger chart with room for a
-          legend, and it can't push other content out of view the way an
-          in-flow expansion did. */}
       <Dialog open={showPlayback} onOpenChange={setShowPlayback}>
         <DialogContent>
           <DialogHeader>
@@ -303,12 +275,6 @@ export default function InvestigationDetail({ result, loading }) {
         </DialogContent>
       </Dialog>
 
-      {/* Scoped to this investigation - lives alongside Replay/Langfuse
-          instead of being a global header action, since its
-          context (metric/day/segment) only makes sense once a result
-          exists. key forces a fresh mount (clean message history) per
-          investigation instead of leaking the previous one's follow-up
-          conversation. */}
       <Dialog open={chatOpen} onOpenChange={setChatOpen}>
         <DialogContent>
           <DialogHeader>

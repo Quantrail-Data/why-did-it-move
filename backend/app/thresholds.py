@@ -1,41 +1,19 @@
 """Detection thresholds computed live from whatever data is currently
-loaded, instead of a single hardcoded percentage shared across every
-metric. This is the automated version of what scripts/validate_thresholds.sql
-already does by hand: measure the empirical distribution of "normal"
-day-to-day deviation in the actual dataset, and set the cutoff just above
-that noise floor. The difference is this runs inside the pipeline itself
-(detect.py's scan, investigate.py's drill-down) every time, so it stays
-correct whether the loaded data is the known 5-week batch, the Day-2
-unseen-incident slice, or rows arriving one at a time via /api/ingest/events
-- none of which necessarily share the known batch's exact noise profile.
-"""
+loaded - each metric's own empirical p95 deviation, not one flat percentage
+shared across all of them (scripts/validate_thresholds.sql is the by-hand
+version of this same measurement)."""
 import threading
 import time
 
 from . import config, metrics
 
-# Short TTL cache: compute_metric_thresholds does up to 5 heavy UNION-ALL
-# queries across all 9 dimensions, and was being called fresh on every
-# /api/scan, /api/investigate, AND /api/metric-tree request - including
-# every page load/reload, which stacks up fast (confirmed directly: 3
-# concurrent /api/metric-tree calls took ~143s each, ClickHouse itself
-# became the bottleneck under that load). The empirical noise distribution
-# this measures does not meaningfully change between two page loads a few
-# seconds apart, so caching it for a short window is a straightforward,
-# correctness-preserving win - worst case, a threshold lags freshly-loaded
-# data by up to CACHE_TTL_SECONDS, an explicit and small tradeoff, not
-# silently stale forever. Keyed by the exact metric set requested (scan /
-# metric-tree ask for headline metrics; investigate asks for a larger set
-# including decomposition factors), so different callers don't collide.
+# 3 concurrent /api/metric-tree calls took ~143s each without caching -
+# ClickHouse became the bottleneck. TTL is a small, explicit staleness
+# tradeoff, not silently-stale-forever.
 CACHE_TTL_SECONDS = 120
 _cache_lock = threading.Lock()
 _cache: dict = {}
 
-# Same trailing-same-weekday-baseline computation detect.py's
-# _DAILY_SEGMENT_QUERY uses, reduced to just (pct_dev, requests) for one
-# dimension. Unioned across every dimension in the caller below - this is
-# scripts/validate_thresholds.sql Part 1, generalized from 9 hand-copied
-# blocks (one per dimension) into one Python-built query.
 _DIM_DEVIATION_SUBQUERY = """
     SELECT requests, (actual_value - baseline_avg) / baseline_avg AS pct_dev
     FROM (
@@ -66,10 +44,6 @@ _DIM_DEVIATION_SUBQUERY = """
             ) AS baseline_n
         FROM daily
     )
-    -- Same robust (median) baseline detect.py/investigate.py now use - see
-    -- baseline.py. Measuring the noise distribution with a mean while
-    -- flagging against a median would calibrate the threshold against a
-    -- different statistic than the one being thresholded.
     WHERE baseline_avg > 0 AND baseline_n >= {min_baseline_samples}
 """
 
@@ -84,17 +58,8 @@ _METRIC_THRESHOLD_QUERY = """
 
 
 def compute_metric_thresholds(client, metric_names) -> dict:
-    """Returns {metric_name: {pct_threshold, volume_floor, n_samples, dynamic}}.
-
-    pct_threshold: this metric's own empirical p95 |deviation| across every
-    dimension's day-to-day trailing-baseline comparison - the anomaly cutoff.
-    volume_floor: p10 of request volume among the same population - segments
-    below this are the ones validate_thresholds.sql Part 2 showed are
-    statistically noisier from small-N alone, not "differently behaved."
-
-    Falls back to the static config constants when there isn't enough
-    history yet to trust a percentile (cold start on a small/new batch).
-    """
+    """{metric_name: {pct_threshold, volume_floor, n_samples, dynamic}} -
+    falls back to static config constants below MIN_THRESHOLD_SAMPLES."""
     cache_key = frozenset(metric_names)
     with _cache_lock:
         cached = _cache.get(cache_key)
@@ -104,10 +69,6 @@ def compute_metric_thresholds(client, metric_names) -> dict:
     result = {}
     for metric_name in metric_names:
         metric_expr = metrics.METRIC_EXPRESSIONS[metric_name]
-        # Degenerate cuts excluded: fill_rate is 1.0 by construction inside
-        # every vertical/campaign_type (see metrics.DEGENERATE_METRIC_DIMENSIONS),
-        # so including them would stuff the noise distribution with thousands
-        # of exactly-zero deviations and drag the p95 cutoff artificially low.
         subqueries = [
             _DIM_DEVIATION_SUBQUERY.format(
                 dim_col=dim_col,

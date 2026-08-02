@@ -1,9 +1,6 @@
-"""Drill-down pipeline: given a metric + day (flagged by detect.py, or
-supplied on demand), find WHICH factor moved and WHICH segment is
-responsible, explicitly recording what was checked and ruled out along the
-way. Every number here comes from a ClickHouse query; the LLM (llm.narrate)
-is called exactly once at the end, on the finished structured result.
-"""
+"""Drill-down pipeline: given a metric + day, find which factor moved and
+which segment is responsible, recording what was checked and ruled out.
+Every number comes from ClickHouse; the LLM is called once, at the end."""
 import json
 from datetime import date
 from typing import Optional
@@ -11,10 +8,6 @@ from typing import Optional
 from . import baseline as baseline_module
 from . import config, coverage as coverage_module, db, llm, metrics, thresholds as thresholds_module, timing, tracing
 
-# Every metric investigate() might need a threshold for: the requested
-# metric itself (could be any of metrics.METRIC_EXPRESSIONS via manual
-# investigate/chat, not just a headline one), plus the revenue-decomposition
-# factors, plus every headline metric (metric-tree/scan reuse this too).
 _DECOMPOSITION_FACTORS = ("requests", "fill_rate", "render_rate", "ecpm")
 
 _OVERALL_QUERY = """
@@ -84,36 +77,17 @@ def _build_segment_query(dim_col: str, metric_expr: str, hour_cutoff=None) -> st
             metric_expr, "segment_value, toDayOfWeek(day)", config.TRAILING_WEEKS
         ),
     )
-# NOTE: deliberately no `WHERE day = ...` here. SQL's logical order runs
-# WHERE before window functions, so filtering to one day in the SQL itself
-# would leave the trailing-baseline window with zero prior rows to look at
-# (confirmed against a real run: every baseline came back NaN, window frame
-# size 0, even on the dataset's last day with a month of history behind it).
-# Fetch the full range, filter to the target day in Python instead - same
-# pattern _OVERALL_QUERY and detect.py's scan already use correctly.
+
+
+# No `WHERE day = ...` here on purpose - filtering to one day before the
+# window function runs leaves the trailing baseline with zero prior rows.
+# Fetch the full range, filter to the target day in Python instead.
 
 
 def daily_deviation_series(client, metric_name: str) -> list:
-    """Every day's actual vs trailing-same-weekday-baseline for one metric,
-    across the whole loaded range (no segment filter, no day filter) - powers
-    the metric-history timeline (frontend/src/components/MetricHistoryTimeline.jsx),
-    which replaced a manual metric/day picker with a clickable per-day chart:
-    click any day, flagged or not, to investigate it. Also the source of
-    truth for compute_daily_deviation below, so both stay exactly consistent.
-
-    Each point also carries baseline_n (how many prior same-weekday
-    observations backed it) and evaluated_hours (non-empty when the day was
-    only partly loaded and was therefore compared over a restricted hour
-    window). Days with too little history to judge are returned with
-    pct_deviation=None and an explicit reason, so the UI can render "not
-    evaluated" differently from "evaluated and clean" - see coverage.py.
-    """
     coverage = coverage_module.day_coverage(client)
     metric_expr = metrics.METRIC_EXPRESSIONS[metric_name]
 
-    # One unrestricted pass for the complete days, plus one hour-restricted
-    # pass per partial day. Realistically there is at most one partial day
-    # (the last), so this is 1-2 queries, not N.
     rows_by_day = {}
     passes = [(None, {d for d, i in coverage.items() if i["complete"]})]
     for partial_day in coverage_module.partial_days(coverage):
@@ -160,10 +134,6 @@ def daily_deviation_series(client, metric_name: str) -> list:
 
 
 def compute_daily_deviation(client, day: date, metric_name: str) -> Optional[dict]:
-    """Actual vs trailing-same-weekday-baseline for one metric, across the
-    whole dataset (no segment filter) - the "did the top-line number move"
-    check, reused for both factor decomposition and the dashboard metric tree.
-    """
     day_str = day.isoformat()
     for point in daily_deviation_series(client, metric_name):
         if point["day"] == day_str:
@@ -179,10 +149,6 @@ def compute_daily_deviation(client, day: date, metric_name: str) -> Optional[dic
     return None
 
 
-# Sentinel so callers can pass hour_cutoff=None ("this day is complete, do
-# not restrict") distinctly from omitting it ("work it out yourself"). The
-# latter costs an extra coverage query, so callers that already know the
-# cutoff (investigate()) pass it explicitly.
 _UNSET = object()
 
 
@@ -194,20 +160,6 @@ def segment_ranking(
     volume_floor: Optional[int] = None,
     hour_cutoff=_UNSET,
 ) -> list:
-    """Every segment value of one dimension, for one metric, on one day -
-    ranked by |deviation| descending. dim_col must come from
-    metrics.DIMENSIONS (a fixed whitelist), never from raw user input.
-
-    Fetches the full date range (see the note above _SEGMENT_QUERY) and
-    filters to `day` here in Python - `day` is a Pydantic-validated `date`
-    object either way, safe to compare directly against ClickHouse's
-    returned `datetime.date` values.
-
-    volume_floor defaults to the static config value when the caller hasn't
-    already computed a dynamic one (thresholds.compute_metric_thresholds) -
-    kept optional so this function still works standalone (e.g. a future
-    script/test) without forcing every caller through the dynamic path.
-    """
     if volume_floor is None:
         volume_floor = config.MIN_VOLUME_FLOOR
     if hour_cutoff is _UNSET:
@@ -220,7 +172,6 @@ def segment_ranking(
     for row_day, segment_value, requests, actual, baseline, baseline_mean, _stddev, baseline_n in rows:
         if row_day != day or requests < volume_floor:
             continue
-        # Unfilled traffic is not a segment - see metrics.BLANK_SEGMENT_VALUE.
         if str(segment_value) == metrics.BLANK_SEGMENT_VALUE:
             continue
         if metrics.is_invalid_number(actual) or metrics.is_invalid_number(baseline) or baseline == 0:
@@ -247,21 +198,12 @@ def segment_ranking(
 
 
 def segment_value_lookup(client, day: date, metric_name: str, dim_col: str, value: str) -> dict:
-    """Used by /api/ask: look up one specific segment value instead of ranking all of them."""
     for r in segment_ranking(client, day, metric_name, dim_col):
         if str(r["value"]) == str(value):
             return r
     return {"dimension": dim_col, "value": value, "metric": metric_name, "note": "no data for this segment/day/metric combination"}
 
 
-# Multi-dimension (combo) drill-down: hierarchical second pass. Given the
-# winning single-dimension segment (e.g. country=IN), checks every OTHER
-# dimension for a combo (country=IN AND device_model=iPhone) that deviates
-# even more sharply. hourly_segment_metrics already stores one row per hour
-# x the FULL 10-dimension combination (see the ORDER BY in
-# configs/clickhouse/01-schema.sql -- that's exactly what the corruption fix
-# covers), so this is just _SEGMENT_QUERY with a WHERE on the outer
-# dimension and GROUP BY on a second one -- no schema change needed.
 _COMBO_SEGMENT_QUERY = """
     WITH daily AS (
         SELECT
@@ -310,22 +252,10 @@ def refine_segment(
     thresholds: dict,
     hour_cutoff=_UNSET,
 ) -> Optional[dict]:
-    """Within the winning single-dimension segment, check every other
-    dimension for an intersection that deviates even more sharply than the
-    single dimension alone -- e.g. country=IN alone is +25%, but within it
-    device_model=iPhone is +52%, a much tighter localization. Returns the
-    single best combo only if it independently clears this metric's own
-    (dynamic) significance threshold AND is strictly more extreme than the
-    marginal single-dimension finding -- a floor against reporting a combo
-    that's just noise on a smaller slice of the same segment. Returns None
-    if no combo qualifies (the single dimension is already the best answer).
-
-    Scope note: this catches a combo anomaly that also shows some signal in
-    the marginal dimension -- the realistic case for most localized
-    incidents. A combo invisible in every single dimension alone would need
-    full pairwise scanning across all dimension pairs, not done here (see
-    PROGRESS.md for the accepted scope/time tradeoff).
-    """
+    """Within the winning segment, checks every other dimension for a
+    sharper intersection (e.g. country=IN alone +25% vs country=IN AND
+    device_model=iPhone +52%). Single dimensions only where the marginal
+    dimension also shows signal - full pairwise scanning isn't done here."""
     metric_thresholds = thresholds.get(
         metric_name, {"pct_threshold": config.PCT_DEVIATION_THRESHOLD, "volume_floor": config.MIN_VOLUME_FLOOR}
     )
@@ -382,23 +312,12 @@ def investigate(metric_name: str, day: date, anomaly_candidate_id: Optional[str]
     )
 
     def timed_span(name, func, input=None):
-        """Every stage is both a Langfuse span and a timing bucket, under one
-        name - so the trace a judge opens and the latency breakdown they see
-        in the UI describe the same stages, not two different decompositions."""
         return trace.run_span(name, lambda: timings.measure(name, func), input=input)
 
-    # Is the target day fully loaded? Resolved once here and threaded through
-    # every query below, so a partial day is compared against the same hours
-    # of its baselines rather than against their full 24 - see coverage.py.
     day_coverage = timed_span("day_coverage", lambda: coverage_module.day_coverage(client))
     hour_cutoff = coverage_module.hour_cutoff_for(day_coverage, day)
     coverage_note = coverage_module.describe(day_coverage, day)
 
-    # One pass computing this metric's own empirical noise band (plus every
-    # metric the decomposition/scan below might touch) - see thresholds.py.
-    # Reused for factor significance, segment ranking's volume floor, the
-    # ruled-out cutoff, confidence, and combo refinement below, so every
-    # judgment call in this investigation uses the same, data-derived bar.
     metric_set = set(metrics.HEADLINE_METRICS) | set(_DECOMPOSITION_FACTORS) | {metric_name}
     computed_thresholds = timed_span(
         "compute_thresholds",
@@ -443,14 +362,6 @@ def investigate(metric_name: str, day: date, anomaly_candidate_id: Optional[str]
     scan_thresholds = computed_thresholds.get(
         scan_metric, {"pct_threshold": config.PCT_DEVIATION_THRESHOLD, "volume_floor": config.MIN_VOLUME_FLOOR}
     )
-    # Cuts that are undefined for the metric actually being sliced are stated
-    # as not-applicable with the reason, never run and then reported as
-    # "checked, came back normal" - claiming to have checked something that
-    # cannot vary is a false claim of diligence. Keyed off scan_metric, not
-    # the requested metric: a revenue investigation that decomposes down to
-    # fill_rate slices by fill_rate, so it is fill_rate's degenerate cuts
-    # that get skipped and therefore fill_rate's that must be explained.
-    # See metrics.DEGENERATE_METRIC_DIMENSIONS.
     scan_dimensions = metrics.scannable_dimensions(scan_metric)
     ruled_out.extend(metrics.degenerate_notes(scan_metric))
 
@@ -484,8 +395,6 @@ def investigate(metric_name: str, day: date, anomaly_candidate_id: Optional[str]
         if abs(top["pct_deviation"]) < scan_thresholds["pct_threshold"]:
             ruled_out.append(f"{dim}: no segment stands out (closest: {top['value']} at {top['pct_deviation']:+.1%})")
 
-    # Multi-dimension drill-down: within the winning segment, check every
-    # other dimension for a sharper intersection (see refine_segment above).
     if best is not None:
         combo = timed_span(
             "refine_segment",
@@ -512,29 +421,14 @@ def investigate(metric_name: str, day: date, anomaly_candidate_id: Optional[str]
         "responsible_segment": best,
         "checked_and_ruled_out": ruled_out,
     }
-    # Only disclosed when the day really is partial, so the LLM has nothing
-    # to editorialise about on a normal complete day.
     if coverage_note:
         findings["data_coverage_note"] = coverage_note
 
     diagnosis_text = timed_span("narrate", lambda: llm.narrate(findings), input=findings)
 
-    # Confidence: how far past our detection threshold the responsible
-    # segment's deviation sits, normalized so 2x the threshold maps to 1.0.
-    # Deliberately NOT a fixed constant - a hardcoded number here would be
-    # exactly the kind of unearned-precision figure the problem statement
-    # warns against ("no hallucinated figures"), just committed by us
-    # instead of the LLM. No segment found -> low flat confidence, since
-    # the diagnosis is then just "nothing stood out," not a located cause.
-    # Uses the combo's deviation when one was found - it's the more precise
-    # (and by construction, more extreme) number.
-    #
-    # Now additionally discounted by how much history actually backs the
-    # baseline. The same -45% deviation is much weaker evidence off 2 prior
-    # same-weekdays than off 4, and reporting both at the same confidence
-    # would be exactly the unearned precision this score exists to avoid.
-    # Linear in baseline_n up to TRAILING_WEEKS, floored at 0.5 so a
-    # thin-history finding is still reported, just visibly less certain.
+    # Confidence: magnitude past threshold, discounted by how much baseline
+    # history backs it - not a hardcoded number, computed from the same
+    # data-derived bar as everything else.
     if best is not None:
         driver_pct_dev = best["refined_by"]["pct_deviation"] if best.get("refined_by") else best["pct_deviation"]
         magnitude = min(1.0, abs(driver_pct_dev) / (2 * scan_thresholds["pct_threshold"]))
@@ -555,10 +449,6 @@ def investigate(metric_name: str, day: date, anomaly_candidate_id: Optional[str]
         default=str,
     )
 
-    # Map(String, String) already supports more than one pair - when a
-    # combo was found, persist BOTH the outer segment and the refining
-    # dimension, a genuine multi-dimension attribution, not just the
-    # single-dimension finding.
     if best is not None:
         responsible_segment_map = {best["dimension"]: str(best["value"])}
         if best.get("refined_by"):
@@ -607,9 +497,6 @@ def investigate(metric_name: str, day: date, anomaly_candidate_id: Optional[str]
         ),
         llm_stages=("narrate",),
     )
-    # Logged as its own row so it becomes one sample in the p95 distribution
-    # /api/latency-stats reports - a single run's timing (above) says nothing
-    # about whether this run was typical or lucky.
     timing.log(admin, "investigate", timings_dict)
 
     return {
@@ -622,9 +509,6 @@ def investigate(metric_name: str, day: date, anomaly_candidate_id: Optional[str]
         "checked_and_ruled_out": ruled_out,
         "confidence": confidence,
         "data_coverage_note": coverage_note,
-        # Per-stage wall clock, same stage names as the Langfuse spans. The
-        # clickhouse_ms / llm_ms split is what makes "ClickHouse analyses,
-        # the LLM only narrates" a measured claim instead of an assertion.
         "timings": timings_dict,
         "langfuse_trace_id": trace_id,
     }

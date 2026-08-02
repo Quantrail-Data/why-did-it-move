@@ -1,17 +1,10 @@
 import { useState } from "react"
 import { ChevronDown, ChevronRight, Timer } from "lucide-react"
 
-// Colors carry the argument, so they're fixed rather than themed: ClickHouse
-// time in the primary accent, LLM time in amber. Seeing the amber segment
-// dominate is the point - it shows the analysis is already done before the
-// model is called.
 const CH_COLOR = "hsl(var(--primary))"
 const LLM_COLOR = "#f59e0b"
 const OTHER_COLOR = "hsl(var(--muted-foreground) / 0.35)"
 
-// Stage names match the Langfuse span names one-for-one (see
-// backend/app/timing.py), so the breakdown here and the trace a judge opens
-// describe the same pipeline rather than two different decompositions.
 const STAGE_LABELS = {
   day_coverage: "Check day completeness",
   compute_thresholds: "Compute dynamic thresholds",
@@ -46,8 +39,6 @@ export default function LatencyBar({ timings }) {
         <div className="text-xs font-medium tabular-nums">{ms(total_ms)}</div>
       </div>
 
-      {/* Stacked proportional bar - the whole point is the ratio, not the
-          absolute widths, so each segment is sized by its share of total. */}
       <div className="mt-2 flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
         <div style={{ width: `${pct(clickhouse_ms)}%`, backgroundColor: CH_COLOR }} title={`ClickHouse ${ms(clickhouse_ms)}`} />
         <div style={{ width: `${pct(llm_ms)}%`, backgroundColor: LLM_COLOR }} title={`LLM ${ms(llm_ms)}`} />

@@ -21,10 +21,6 @@ class PartialDay(BaseModel):
 
 
 class ScanCoverage(BaseModel):
-    """What the scan could and could not evaluate. Reported explicitly so a
-    day the scan was unable to judge is never rendered the same as a day it
-    judged and found clean - see backend/app/coverage.py."""
-
     days_loaded: int
     partial_days: list[PartialDay]
     skipped_insufficient_history: int
@@ -56,11 +52,6 @@ class AskRequest(BaseModel):
     context: Optional[AskContext] = None
 
 
-# Streaming/incremental ingest - the complement to scripts/load_data.sh's
-# bulk file-drop path. Same ad_events columns/constraints as
-# configs/clickhouse/01-schema.sql; advertiser_id stays a plain string
-# (empty string, not null, on an unfilled request - matches the raw data's
-# own convention so both ingest paths produce identical rows).
 class EventIn(BaseModel):
     event_time: datetime
     app_id: str

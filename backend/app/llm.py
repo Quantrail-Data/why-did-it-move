@@ -1,15 +1,10 @@
-"""Every call into this module is narration or intent-parsing over ALREADY
-COMPUTED structured data - never raw event rows, never SQL generation. That
-split is the trustworthiness guarantee: the LLM cannot invent a number that
-isn't already in the JSON we hand it, because it never sees anything else.
-"""
+"""Narration and intent-parsing over already-computed structured data only -
+never raw rows, never SQL generation. The LLM can't invent a number that
+isn't already in the JSON handed to it."""
 import json
 
 from . import config, metrics
 
-# Base instructions that are true for EVERY narration call. Anything that
-# depends on a field actually being present in the input is appended
-# conditionally by narrate() below - see the comment there.
 _NARRATE_BASE_PROMPT = (
     "You are a root-cause analyst narrating a pre-computed ad-metrics investigation. "
     "You are given ONLY structured, already-computed numbers as JSON - never invent, "
@@ -28,21 +23,17 @@ _NARRATE_BASE_PROMPT = (
     "not a database engineer."
 )
 
-# Only appended when the input genuinely carries a non-empty ruled-out list.
 _NARRATE_RULED_OUT_CLAUSE = (
     " The input includes a checked_and_ruled_out list; also state what was checked and "
     "came back normal, using only the entries in that list."
 )
 
-# Only appended when the day was partly loaded (coverage.py).
 _NARRATE_COVERAGE_CLAUSE = (
     " The input includes a data_coverage_note: the day is only partially loaded and was "
     "compared over a restricted hour window. State this limitation explicitly in your "
     "answer so the reader does not mistake it for a full-day figure."
 )
 
-# Kept as the exported name other code/tests may reference; the effective
-# prompt is assembled per call by narrate().
 NARRATE_SYSTEM_PROMPT = _NARRATE_BASE_PROMPT + _NARRATE_RULED_OUT_CLAUSE
 
 ASK_SYSTEM_PROMPT = (
@@ -125,22 +116,9 @@ def _call_llm(system_prompt: str, user_prompt: str) -> str:
 
 
 def narrate(findings: dict) -> str:
-    """findings must already be fully computed - this call cannot add facts.
-
-    The system prompt is assembled from what the input actually contains,
-    rather than being one fixed string. This is not a style choice, it fixes
-    a real fabrication: the prompt used to instruct the model to state "what
-    was checked and ruled out" on every call, including the bare-segment
-    lookup path in ask.py whose input has no checked_and_ruled_out field at
-    all. Asked to report a list that wasn't there, the model invented a
-    plausible one - observed live, claiming "we checked various factors,
-    including user engagement and content quality, but ruled those out" when
-    neither had been checked and neither exists anywhere in this dataset.
-
-    A prompt that asks for something the input cannot supply is an
-    instruction to hallucinate. So the clause is only present when the field
-    is, and the base prompt now forbids inventing checks outright.
-    """
+    """System prompt is assembled from what findings actually contains -
+    asking for a field the input can't supply is an instruction to
+    hallucinate, which is what the old fixed prompt did on ask.py's path."""
     system_prompt = _NARRATE_BASE_PROMPT
     if findings.get("checked_and_ruled_out"):
         system_prompt += _NARRATE_RULED_OUT_CLAUSE
@@ -151,9 +129,6 @@ def narrate(findings: dict) -> str:
 
 
 def parse_question(question: str, schema_hint: str) -> dict:
-    """Free-text question -> {metric, day, dimension, value}. Used by /api/ask
-    to decide WHAT to look up; the lookup itself still runs as a ClickHouse
-    query, never as something the LLM computes directly."""
     prompt = f"{schema_hint}\n\nUser question: {question}"
     raw = _call_llm(ASK_SYSTEM_PROMPT, prompt)
     cleaned = raw.strip()

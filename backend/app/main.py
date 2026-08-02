@@ -1,18 +1,16 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import ask as ask_module
-from . import config, coverage as coverage_module, db, detect, ingest
+from . import config, coverage as coverage_module, db, detect, hourly_drilldown, ingest
 from . import investigate as investigate_module
 from . import metrics, revenue_signals, schemas, thresholds as thresholds_module, timeline as timeline_module, timing
 
 app = FastAPI(title="Why Did It Move - InMobi root-cause backend")
 
-# Hackathon scope: dashboard and backend run on the same docker network /
-# localhost, open CORS is fine. Not for a production deployment.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,13 +34,8 @@ def list_anomalies(day: Optional[date] = None, status: str = "open"):
     client = db.get_ro_client()
     conditions = []
     params = {}
-    # "all" is a sentinel meaning "every status, no filter" - used by the
-    # anomaly-count-by-metric chart, which counts everything the system has
-    # ever detected (including already-investigated and dismissed
-    # candidates), not just what's currently sitting open. The default stays
-    # "open" so every existing caller (the Flagged anomalies panel) is
-    # unaffected - this only changes behavior when a caller asks for "all"
-    # explicitly.
+    # status="all" is a sentinel meaning no filter - used by the anomaly
+    # count chart to count every candidate ever detected, not just open ones.
     if status and status != "all":
         conditions.append("status = {status:String}")
         params["status"] = status
@@ -71,7 +64,7 @@ def investigate_endpoint(req: schemas.InvestigateRequest):
         raise HTTPException(status_code=400, detail=f"unknown metric {req.metric!r}")
     try:
         return investigate_module.investigate(req.metric, req.day, req.anomaly_candidate_id)
-    except Exception as e:  # pipeline failure shouldn't 500 with a stack trace to the client
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -111,11 +104,8 @@ def metric_tree(day: date):
         dev = investigate_module.compute_daily_deviation(client, day, metric_name)
         pct = dev.get("pct_deviation") if dev else None
         pct_threshold = computed_thresholds[metric_name]["pct_threshold"]
-        # "gray" means we could NOT evaluate this metric on this day (no
-        # trailing same-weekday history, or too little of it) - deliberately
-        # a distinct state from "green" (evaluated, and it was fine). The
-        # reason travels with it so the UI can say which, rather than
-        # rendering an unanswerable question as a clean bill of health.
+        # gray = could not evaluate (no/insufficient baseline history) -
+        # distinct from green (evaluated and fine).
         if pct is None:
             status = "gray"
         elif abs(pct) >= pct_threshold * 2:
@@ -171,20 +161,37 @@ def timeline_endpoint(
 
 @app.get("/api/latency-stats")
 def latency_stats_endpoint(endpoint: str = "investigate"):
-    """p50/p95/p99 wall-clock latency across every logged call to `endpoint`
-    - not one run's timing (that's already in every /api/investigate
-    response), but the DISTRIBUTION, which is what "fast" actually means as
-    a claim. See backend/app/timing.py."""
     client = db.get_ro_client()
     return timing.stats(client, endpoint)
 
 
+@app.get("/api/hour-drilldown")
+def hour_drilldown_endpoint(metric: str, hour: datetime):
+    if metric not in metrics.METRIC_EXPRESSIONS:
+        raise HTTPException(status_code=400, detail=f"unknown metric {metric!r}")
+    client = db.get_ro_client()
+    try:
+        computed_thresholds = thresholds_module.compute_metric_thresholds(client, [metric])
+        return hourly_drilldown.investigate_hour(client, hour, metric, computed_thresholds)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/day-hour-scan")
+def day_hour_scan_endpoint(metric: str, day: date):
+    if metric not in metrics.METRIC_EXPRESSIONS:
+        raise HTTPException(status_code=400, detail=f"unknown metric {metric!r}")
+    client = db.get_ro_client()
+    try:
+        computed_thresholds = thresholds_module.compute_metric_thresholds(client, [metric])
+        hours = hourly_drilldown.day_hour_scan(client, day, metric, computed_thresholds)
+        return {"day": day.isoformat(), "metric": metric, "hours": hours}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/revenue-signals")
 def revenue_signals_endpoint(day: Optional[date] = None):
-    """Revenue incident shapes the day-grain threshold scan cannot express -
-    sustained drift, collapsed segments, and mix shifts. See
-    backend/app/revenue_signals.py for why each needs its own detector rather
-    than a different threshold on the existing one."""
     client = db.get_ro_client()
     try:
         cov = coverage_module.day_coverage(client)
