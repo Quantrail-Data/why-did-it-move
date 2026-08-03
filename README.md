@@ -215,8 +215,6 @@ From the dashboard: pick a day, hit **Re-scan** to run detection, click any flag
 - Robust median baseline, partial-day/partial-hour handling, "not evaluated ≠ normal" gating, structurally-degenerate dimension exclusion, and dynamic per-metric thresholds all recompute live from whatever's currently loaded.
 - The loader's overlap guard runs on every invocation, by construction.
 
-**One deliberate manual step remains**, on purpose: run `scripts/edge_cases.sql` once right after the new slice lands (steps in [`INMOBI_CONTEXT.md`](INMOBI_CONTEXT.md)'s "Ingesting and verifying new data" section). The code being correct doesn't guarantee tomorrow's *file* has no new problem of its own - that exact "trust but verify" discipline is what caught this build's real rollup-corruption bug and a real dimension-table duplication bug, neither of which a passing test suite alone would have surfaced.
-
 ## Further reading
 
 - [`EDGE_CASES.md`](EDGE_CASES.md) - full edge-case audit against the live 9M-row dataset: what was found, what changed, and how each fix was verified against real numbers.
