@@ -64,7 +64,17 @@ export default function InvestigationDetail({ result, loading }) {
 
   const { diagnosis_text, responsible_segment, driving_factors, checked_and_ruled_out, langfuse_trace_id } = result
   const langfuseBase = import.meta.env.VITE_LANGFUSE_URL || "http://localhost:3000"
-  const langfuse_trace_url = result.langfuse_trace_url || (langfuse_trace_id ? `${langfuseBase}/trace/${langfuse_trace_id}` : null)
+  const langfuseProjectId = import.meta.env.VITE_LANGFUSE_PROJECT_ID
+  // Self-hosted Langfuse resolves an unscoped /trace/{id} URL; Langfuse Cloud
+  // requires the project-scoped /project/{projectId}/traces/{id} form, or the
+  // trace page 404s with "Trace not found" even though the trace exists.
+  const langfuse_trace_url =
+    result.langfuse_trace_url ||
+    (langfuse_trace_id
+      ? langfuseProjectId
+        ? `${langfuseBase}/project/${langfuseProjectId}/traces/${langfuse_trace_id}`
+        : `${langfuseBase}/trace/${langfuse_trace_id}`
+      : null)
 
   function handleDownload() {
     const doc = buildInvestigationPdf(result, langfuse_trace_url)

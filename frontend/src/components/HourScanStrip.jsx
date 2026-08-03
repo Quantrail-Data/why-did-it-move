@@ -29,23 +29,35 @@ function mergeAllMetrics(resultsByMetric) {
   const hourCount = Math.max(0, ...Object.values(resultsByMetric).map((r) => r?.length ?? 0))
   const merged = []
   for (let i = 0; i < hourCount; i++) {
-    let best = null
-    let bestMetric = null
+    const flags = []
     for (const [metric, hours] of Object.entries(resultsByMetric)) {
       const seg = hours?.[i]?.responsible_segment
-      if (seg && (!best || Math.abs(seg.pct_deviation) > Math.abs(best.pct_deviation))) {
-        best = seg
-        bestMetric = metric
-      }
+      if (seg) flags.push({ metric, responsible_segment: seg })
     }
+    flags.sort((a, b) => Math.abs(b.responsible_segment.pct_deviation) - Math.abs(a.responsible_segment.pct_deviation))
     const anyHour = Object.values(resultsByMetric).find((r) => r?.[i])?.[i]
-    merged.push({ hour: anyHour.hour, hod: anyHour.hod, responsible_segment: best, metric: bestMetric })
+    merged.push({ hour: anyHour.hour, hod: anyHour.hod, flags })
   }
   return merged
 }
 
+function flagsFor(h, metric) {
+  if (metric === "all") return h.flags
+  return h.responsible_segment ? [{ metric, responsible_segment: h.responsible_segment }] : []
+}
+
+function blockBackground(flags, metric) {
+  if (flags.length === 0) return "hsl(var(--muted))"
+  if (metric !== "all") return "#ef4444"
+  if (flags.length === 1) return METRIC_COLOR[flags[0].metric]
+  const stops = flags.map(
+    (f, i) => `${METRIC_COLOR[f.metric]} ${(i / flags.length) * 100}% ${((i + 1) / flags.length) * 100}%`
+  )
+  return `linear-gradient(to right, ${stops.join(", ")})`
+}
+
 export default function HourScanStrip({ day, onInvestigate }) {
-  const [metric, setMetric] = useState("revenue")
+  const [metric, setMetric] = useState("all")
   const [hours, setHours] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -65,13 +77,13 @@ export default function HourScanStrip({ day, onInvestigate }) {
       .finally(() => setLoading(false))
   }, [metric, day])
 
-  const flaggedCount = hours?.filter((h) => h.responsible_segment).length ?? 0
+  const flaggedCount = hours?.filter((h) => flagsFor(h, metric).length > 0).length ?? 0
 
   return (
     <Card>
       <CardHeader className="space-y-2">
         <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
+          <div className="flex flex-col gap-1">
             <CardTitle>Hour breakdown {hours && `(${flaggedCount}/24 flagged)`}</CardTitle>
             <CardDescription>Which hours of {day} had a responsible segment - not just the whole-day number.</CardDescription>
           </div>
@@ -96,9 +108,18 @@ export default function HourScanStrip({ day, onInvestigate }) {
           <div>
             <div className="flex gap-0.5">
               {hours.map((h) => {
-                const flagged = !!h.responsible_segment
-                const color = flagged ? (metric === "all" ? METRIC_COLOR[h.metric] : "#ef4444") : "hsl(var(--muted))"
+                const flags = flagsFor(h, metric)
+                const flagged = flags.length > 0
+                const background = blockBackground(flags, metric)
                 const isSelected = selected?.hour === h.hour
+                const title = flagged
+                  ? `${formatHour(h.hod)}: ${flags
+                    .map(
+                      (f) =>
+                        `${metric === "all" ? `${f.metric} · ` : ""}${f.responsible_segment.dimension}=${f.responsible_segment.value} (${f.responsible_segment.pct_deviation >= 0 ? "+" : ""}${(f.responsible_segment.pct_deviation * 100).toFixed(1)}%)`
+                    )
+                    .join("; ")}`
+                  : `${formatHour(h.hod)}: nothing stood out`
                 return (
                   <button
                     key={h.hour}
@@ -106,17 +127,13 @@ export default function HourScanStrip({ day, onInvestigate }) {
                     className="group relative flex-1 rounded-sm transition-opacity hover:opacity-100"
                     style={{
                       height: "2.25rem",
-                      backgroundColor: color,
+                      background,
                       opacity: isSelected ? 1 : flagged ? 0.85 : 0.5,
                       outline: isSelected ? "2px solid hsl(var(--foreground))" : "none",
                     }}
                     disabled={!flagged}
                     onClick={() => setSelected(isSelected ? null : h)}
-                    title={
-                      flagged
-                        ? `${formatHour(h.hod)}: ${metric === "all" ? `${h.metric} · ` : ""}${h.responsible_segment.dimension}=${h.responsible_segment.value} (${h.responsible_segment.pct_deviation >= 0 ? "+" : ""}${(h.responsible_segment.pct_deviation * 100).toFixed(1)}%)`
-                        : `${formatHour(h.hod)}: nothing stood out`
-                    }
+                    title={title}
                   />
                 )
               })}
@@ -140,26 +157,38 @@ export default function HourScanStrip({ day, onInvestigate }) {
               </div>
             )}
 
-            {selected?.responsible_segment && (
-              <div className="mt-3 flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs">
-                <span>
-                  <span className="font-semibold">{formatHour(selected.hod)}</span> ·{" "}
-                  {metric === "all" && <span className="font-medium">{selected.metric} · </span>}
-                  <span className="font-medium">
-                    {selected.responsible_segment.dimension} = {String(selected.responsible_segment.value)}
-                  </span>{" "}
-                  <span className={selected.responsible_segment.pct_deviation >= 0 ? "text-emerald-600" : "text-red-600"}>
-                    ({selected.responsible_segment.pct_deviation >= 0 ? "+" : ""}
-                    {(selected.responsible_segment.pct_deviation * 100).toFixed(1)}%)
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  className="shrink-0 rounded-md border px-2 py-1 text-[11px] hover:bg-muted"
-                  onClick={() => onInvestigate?.({ metric: metric === "all" ? selected.metric : metric, day })}
-                >
-                  Investigate this day
-                </button>
+            {selected && flagsFor(selected, metric).length > 0 && (
+              <div className="mt-3 space-y-1.5 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+                <span className="font-semibold">{formatHour(selected.hod)}</span>
+                {flagsFor(selected, metric).map((f) => (
+                  <div key={f.metric} className="flex items-center justify-between gap-2">
+                    <span>
+                      {metric === "all" && (
+                        <span className="mr-1.5 inline-flex items-center gap-1 font-medium">
+                          <span
+                            className="inline-block h-2 w-2 rounded-sm"
+                            style={{ backgroundColor: METRIC_COLOR[f.metric] }}
+                          />
+                          {f.metric} ·
+                        </span>
+                      )}
+                      <span className="font-medium">
+                        {f.responsible_segment.dimension} = {String(f.responsible_segment.value)}
+                      </span>{" "}
+                      <span className={f.responsible_segment.pct_deviation >= 0 ? "text-emerald-600" : "text-red-600"}>
+                        ({f.responsible_segment.pct_deviation >= 0 ? "+" : ""}
+                        {(f.responsible_segment.pct_deviation * 100).toFixed(1)}%)
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-md border px-2 py-1 text-[11px] hover:bg-muted"
+                      onClick={() => onInvestigate?.({ metric: f.metric, day })}
+                    >
+                      Investigate
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
             {!loading && flaggedCount === 0 && (

@@ -98,16 +98,28 @@ SELECT 'H0 duplicate dimension rows (must be 0 before trusting I1)' AS check,
        (SELECT count() - uniqExact(advertiser_id) FROM inmobi_rca.advertisers) AS dup_advertisers,
        (SELECT count() - uniqExact(geo_device_id) FROM inmobi_rca.geo_device) AS dup_geo_device;
 
-SELECT 'I1 rollup vs raw by country (whole dataset)' AS check,
+-- NOTE (added after the 2026-07-06..10 unseen slice load): this check compares
+-- the rollup against a join with the CURRENT geo_device table. That table was
+-- reloaded with the unseen slice's regenerated attribute values (same IDs,
+-- different country/device/os - see spec.md), so it now only matches events
+-- rolled up AFTER that reload. Rows before 2026-07-06 were materialized
+-- against the OLD dimension snapshot and will legitimately mismatch here -
+-- that's expected divergence, not corruption (proven by re-running this same
+-- join against the frozen `data/inmobi/*.csv` snapshot: 0 mismatches, see
+-- EDGE_CASES.md EC-9). Scoped to the unseen slice only, where the check's
+-- assumption (rollup and live dimension table agree) actually holds.
+SELECT 'I1 rollup vs raw by country (unseen slice, 2026-07-06+)' AS check,
        countIf(abs(rollup_rev - raw_rev) > 0.000001) AS mismatched_countries,
        max(abs(rollup_rev - raw_rev)) AS max_abs_diff
 FROM (
   WITH
-    rollup AS (SELECT country, sumMerge(revenue) AS rev FROM inmobi_rca.hourly_segment_metrics GROUP BY country),
+    rollup AS (SELECT country, sumMerge(revenue) AS rev FROM inmobi_rca.hourly_segment_metrics
+               WHERE toDate(hour) >= '2026-07-06' GROUP BY country),
     raw AS (SELECT gd.country AS country, sum(e.revenue) AS rev
             FROM inmobi_rca.ad_events e
             INNER JOIN (SELECT geo_device_id, country FROM inmobi_rca.geo_device FINAL) AS gd
                     ON e.geo_device_id = gd.geo_device_id
+            WHERE toDate(e.event_time) >= '2026-07-06'
             GROUP BY country)
   SELECT rollup.country AS country, rollup.rev AS rollup_rev, raw.rev AS raw_rev
   FROM rollup INNER JOIN raw ON rollup.country = raw.country

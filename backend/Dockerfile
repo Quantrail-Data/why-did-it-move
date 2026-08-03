@@ -9,4 +9,7 @@ COPY app ./app
 
 EXPOSE 8001
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+# $PORT is set by Railway/Render at runtime; falls back to 8001 for local
+# docker-compose, which doesn't set it. --reload dropped for a deployed
+# target (dev convenience only, no reason to pay its overhead in prod).
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8001}"]

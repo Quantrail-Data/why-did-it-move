@@ -5,6 +5,8 @@ CLICKHOUSE_HTTP_URL = os.environ.get("CLICKHOUSE_HTTP_URL", "http://clickhouse:8
 _parsed = urlparse(CLICKHOUSE_HTTP_URL)
 CLICKHOUSE_HOST = _parsed.hostname or "clickhouse"
 CLICKHOUSE_PORT = _parsed.port or 8123
+# ClickHouse Cloud terminates TLS on 8443/https; local Docker is plain http on 8123.
+CLICKHOUSE_SECURE = _parsed.scheme == "https"
 CLICKHOUSE_DATABASE = "inmobi_rca"
 
 CLICKHOUSE_READONLY_USER = os.environ["CLICKHOUSE_READONLY_USER"]

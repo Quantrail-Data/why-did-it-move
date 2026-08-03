@@ -77,7 +77,13 @@ def ask(question: str, context: Optional[dict] = None) -> dict:
             [[question, answer, json.dumps({"in_scope": False}), trace_id or ""]],
             column_names=["question", "answer_text", "cited_numbers", "langfuse_trace_id"],
         )
-        return {"question": question, "answer": answer, "cited_numbers": {}, "langfuse_trace_id": trace_id}
+        return {
+            "question": question,
+            "answer": answer,
+            "cited_numbers": {},
+            "langfuse_trace_id": trace_id,
+            "langfuse_trace_url": tracing.get_trace_url(trace_id),
+        }
 
     context = context or {}
     metric_name = parsed.get("metric") or context.get("metric")
@@ -111,4 +117,10 @@ def ask(question: str, context: Optional[dict] = None) -> dict:
         column_names=["question", "answer_text", "cited_numbers", "langfuse_trace_id"],
     )
 
-    return {"question": question, "answer": answer, "cited_numbers": result, "langfuse_trace_id": trace_id}
+    return {
+        "question": question,
+        "answer": answer,
+        "cited_numbers": result,
+        "langfuse_trace_id": trace_id,
+        "langfuse_trace_url": tracing.get_trace_url(trace_id),
+    }

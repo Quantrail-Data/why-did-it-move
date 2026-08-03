@@ -32,11 +32,19 @@ function normalizeAllMetrics(results) {
   const days = []
   for (let i = 0; i < dayCount; i++) {
     let best = null
+    let bestScore = -1
     for (let mi = 0; mi < results.length; mi++) {
       const point = results[mi].days[i]
+      const threshold = results[mi].pct_threshold
       if (!point || point.pct_deviation == null) continue
-      if (best == null || Math.abs(point.pct_deviation) > Math.abs(best.pct_deviation)) {
-        best = { ...point, metric: REAL_METRICS[mi], pct_threshold: results[mi].pct_threshold }
+      // Score by how far past ITS OWN threshold a metric is, not raw
+      // magnitude - a metric with a naturally wide threshold (e.g. revenue
+      // ~45%) will always out-magnitude a tight one (fill_rate ~5.5%) even
+      // when the tight one is the actual anomaly and the wide one is normal.
+      const score = threshold ? Math.abs(point.pct_deviation) / threshold : Math.abs(point.pct_deviation)
+      if (best == null || score > bestScore) {
+        best = { ...point, metric: REAL_METRICS[mi], pct_threshold: threshold }
+        bestScore = score
       }
     }
     days.push(best || { ...results[0].days[i], metric: null, pct_threshold: null })

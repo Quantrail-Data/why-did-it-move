@@ -17,6 +17,7 @@ def get_ro_client():
             username=config.CLICKHOUSE_READONLY_USER,
             password=config.CLICKHOUSE_READONLY_PASSWORD,
             database=config.CLICKHOUSE_DATABASE,
+            secure=config.CLICKHOUSE_SECURE,
         )
     return _local.ro_client
 
@@ -29,5 +30,6 @@ def get_admin_client():
             username=config.CLICKHOUSE_ADMIN_USER,
             password=config.CLICKHOUSE_ADMIN_PASSWORD,
             database=config.CLICKHOUSE_DATABASE,
+            secure=config.CLICKHOUSE_SECURE,
         )
     return _local.admin_client

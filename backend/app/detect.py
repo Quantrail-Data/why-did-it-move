@@ -45,14 +45,27 @@ def _build_daily_segment_query(dim_col: str, metric_expr: str, hour_cutoff=None)
     )
 
 
-def _existing_open_keys(client) -> set:
+def _existing_open_candidates(client) -> dict:
+    """Maps (day, metric, primary_dim, primary_value) -> candidate id, keyed
+    only on the PRIMARY dimension (segment_dims' first entry - the one
+    refine_segment() started from), not every dimension in a combo. A combo
+    candidate's marginal deviation differs per dimension (country=CA's
+    number isn't device_model=Pixel 8's number), so keying on every entry
+    would make it ambiguous which fresh value to refresh it with."""
+    # 'investigated' counts as already-known too - once a candidate has been
+    # clicked into, a later scan must still recognize it (and refresh it),
+    # not treat the segment as never-seen and re-insert a fresh duplicate.
+    # 'dismissed' is excluded on purpose: a human explicitly said this one's
+    # not real, and a rescan shouldn't resurrect it.
     rows = client.query(
-        "SELECT day, metric, segment_dims FROM inmobi_rca.anomaly_candidates WHERE status = 'open'"
+        "SELECT id, day, metric, segment_dims FROM inmobi_rca.anomaly_candidates WHERE status IN ('open', 'investigated')"
     ).result_rows
-    keys = set()
-    for day, metric_name, segment_dims in rows:
-        for dim_col, value in segment_dims.items():
-            keys.add((day, metric_name, dim_col, value))
+    keys = {}
+    for cid, day, metric_name, segment_dims in rows:
+        if not segment_dims:
+            continue
+        primary_dim, primary_value = next(iter(segment_dims.items()))
+        keys[(day, metric_name, primary_dim, primary_value)] = str(cid)
     return keys
 
 
@@ -62,7 +75,9 @@ def scan(since_day: Optional[date] = None) -> dict:
     scanned = 0
     skipped_low_history = 0
     new_candidates = []
-    existing_keys = _existing_open_keys(client)
+    refresh_rows = {}  # candidate id -> fresh (baseline, actual, pct_dev, z, baseline_n)
+    existing_candidates = _existing_open_candidates(client)
+    existing_keys = set(existing_candidates)
 
     computed_thresholds = thresholds_module.compute_metric_thresholds(client, metrics.HEADLINE_METRICS)
 
@@ -108,6 +123,7 @@ def scan(since_day: Optional[date] = None) -> dict:
                         if baseline_stddev and baseline_stddev > 0
                         else None
                     )
+                    z_val = float(z) if z is not None else 0.0
                     # AND, not OR: both a large and statistically real
                     # deviation, or ~26% of everything gets flagged.
                     if z is not None:
@@ -117,11 +133,22 @@ def scan(since_day: Optional[date] = None) -> dict:
                         )
                     else:
                         is_anomaly = abs(pct_dev) >= pct_threshold
-                    if not is_anomaly:
-                        continue
 
                     key = (day, metric_name, dim_col, str(segment_value))
-                    if key in existing_keys:
+                    if key in existing_candidates:
+                        # Already an open candidate flagged on this (day,
+                        # metric, primary dim) by an earlier scan - refresh
+                        # its stored snapshot to today's numbers instead of
+                        # leaving it frozen at whatever it was when first
+                        # flagged, even if new data means it's no longer
+                        # anomalous by today's numbers.
+                        refresh_rows[existing_candidates[key]] = (
+                            float(baseline_avg), float(actual), float(pct_dev),
+                            z_val, int(baseline_n or 0),
+                        )
+                        continue
+
+                    if not is_anomaly:
                         continue
                     existing_keys.add(key)
 
@@ -149,6 +176,38 @@ def scan(since_day: Optional[date] = None) -> dict:
         )
         if combo:
             c["segment_dims"][combo["dimension"]] = str(combo["value"])
+
+    # Refinement runs after the single-dim dedup check above, so two
+    # different starting dimensions (e.g. country and device_model, scanned
+    # independently) can converge on the identical combo and both survive
+    # that check - dedupe again here on the final, post-refinement key.
+    seen_final_keys = set()
+    deduped = []
+    for c in new_candidates:
+        final_key = (c["day"], c["metric"], frozenset(c["segment_dims"].items()))
+        if final_key in seen_final_keys:
+            continue
+        seen_final_keys.add(final_key)
+        deduped.append(c)
+    new_candidates = deduped
+
+    # existing_keys was snapshotted at the start of this scan - a concurrent
+    # scan (e.g. a client retry after a proxy timeout, with the original
+    # request still running server-side) can commit in the meantime. Narrow
+    # that race by re-checking immediately before the insert, against the
+    # full combo key this time (existing_keys only has decomposed single-dim
+    # keys, not precise enough for this check).
+    if new_candidates:
+        already_open = {
+            (day, metric_name, frozenset(segment_dims.items()))
+            for day, metric_name, segment_dims in admin.query(
+                "SELECT day, metric, segment_dims FROM inmobi_rca.anomaly_candidates WHERE status IN ('open', 'investigated')"
+            ).result_rows
+        }
+        new_candidates = [
+            c for c in new_candidates
+            if (c["day"], c["metric"], frozenset(c["segment_dims"].items())) not in already_open
+        ]
 
     if new_candidates:
         admin.insert(
@@ -182,9 +241,32 @@ def scan(since_day: Optional[date] = None) -> dict:
             ],
         )
 
+    # Refresh every already-open candidate this scan re-touched, so
+    # anomaly_candidates never sits stale as new data streams in - each row
+    # keeps its original flag/id, but the deviation it reports stays live.
+    # Point mutations, not a single batched one: this table is small (low
+    # hundreds of rows), and the codebase's own convention (see
+    # investigate.py's status update) is a plain ALTER ... UPDATE per id
+    # rather than a staging-table join for a table this size.
+    for candidate_id, (baseline, actual, pct_dev, z_val, baseline_n) in refresh_rows.items():
+        admin.command(
+            """ALTER TABLE inmobi_rca.anomaly_candidates UPDATE
+                   baseline_value = {baseline:Float64},
+                   actual_value = {actual:Float64},
+                   pct_deviation = {pct_dev:Float64},
+                   z_score = {z:Float64},
+                   baseline_n = {baseline_n:UInt8}
+               WHERE id = {id:String}""",
+            parameters={
+                "baseline": baseline, "actual": actual, "pct_dev": pct_dev,
+                "z": z_val, "baseline_n": baseline_n, "id": candidate_id,
+            },
+        )
+
     return {
         "scanned": scanned,
         "new_candidates": len(new_candidates),
+        "refreshed_candidates": len(refresh_rows),
         "thresholds": computed_thresholds,
         "coverage": {
             "days_loaded": len(coverage),

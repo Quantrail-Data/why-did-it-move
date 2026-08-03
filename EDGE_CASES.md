@@ -8,6 +8,55 @@ Reusable probes: `scripts/edge_cases.sql`.
 
 ---
 
+## Summary - findings, fixes, and behavior on data that arrives later
+
+- **A partly-loaded day** (exactly what happens when a fresh slice lands mid-day) flipped a
+  real +19.6% into a fabricated -27.9%, because a half-day was being compared against a
+  full-day baseline. Fixed by restricting both sides of the comparison to the same hour
+  window whenever a day is incomplete. See EC-1.
+- **A real incident poisoning its own future baseline** - a trailing *mean* let one bad day
+  drag the next few weeks' comparisons toward it, manufacturing phantom anomalies in its own
+  aftermath. Fixed by switching to a trailing median, which one outlier in a small window
+  cannot move. See EC-2.
+- **A third of the loaded range had no real baseline at all**, and the dashboard rendered it
+  as clean rather than unevaluated. Fixed by requiring a minimum number of prior samples
+  before a segment-day can be reported as normal. See EC-3.
+- **Two dimensions that are mathematically incapable of ever deviating** (fill rate by
+  vertical/campaign type is always exactly 1.0 or 0 by construction) were being scanned
+  anyway and reported as "checked, nothing found" - a false claim of diligence. Now marked
+  not-applicable explicitly, with the reason stated. See EC-4.
+- **19% of rollup rows were unfilled traffic** excluded from analysis only as an accidental
+  side effect of a divide-by-zero guard, not by design. Now excluded explicitly, by name.
+  See EC-5.
+- **Re-running the loader** on already-loaded data would have silently doubled every number,
+  since the raw table does not deduplicate. Fixed with a staging step that checks for date
+  overlap before committing anything. See EC-7.
+- **Reloading dimension tables for a later data drop** (same IDs, regenerated attribute
+  values) made the already-loaded rollup appear corrupted against a fresh join. Proven benign
+  by cross-checking against the original, frozen dimension snapshot. See EC-9.
+
+**Behavior on future data - inserted, appended, or with dimension values that change
+underneath it:**
+
+- New days are staged and checked against what is already loaded before they touch the real
+  table, so a re-run or an overlapping drop cannot silently double-count anything.
+- Baselines and thresholds are never precomputed and frozen - they are recomputed live from
+  whatever is currently loaded, on every query, so they cannot go stale as more data streams
+  in.
+- Flagged anomalies previously sat frozen at whatever they were the moment they were first
+  caught. They are now refreshed against fresh numbers on every scan, so an existing flag
+  reflects current data rather than the data that was loaded when it was first flagged.
+- Dimension tables can be reloaded (same ID, new attributes) without a schema change or a
+  rebuild. The rollup, keyed on every grouping column, stays correct for data rolled up
+  before the reload; only a live join against the current dimension table diverges from it,
+  and that divergence is understood, proven benign, and scoped out of the validation script
+  rather than ignored. See EC-9.
+- The rollup's `ORDER BY` covers all ten grouping columns, not a representative subset, so a
+  background merge triggered by new data cannot silently collapse a dimension the way an
+  incomplete key would.
+
+---
+
 ## Part 1 - What the data does NOT have (checked, clean)
 
 These were checked precisely because they are the usual suspects. Finding nothing is a
@@ -223,6 +272,53 @@ Two fixes, because the lesson has two halves:
   cannot raise this false alarm again.
 
 Post-fix: **0 mismatched countries, max absolute difference 2.7e-11** (float rounding).
+
+### EC-9 - Reloading dimension tables for the unseen slice makes the known batch's own rollup look "corrupted" against a live join (it isn't)
+
+Hit immediately after loading the real unseen incident dataset (`ad_events.parquet`,
+2026-07-06..10, 1.5M rows) via `./scripts/load_data.sh data/inmobi_unseen`, appended on top
+of the existing known batch per the decision recorded in `PROGRESS.md`. `spec.md` (shipped
+with the unseen package) explicitly requires reloading `apps.csv`/`advertisers.csv`/
+`geo_device.csv` from that folder - **same IDs, regenerated attribute values** - "joining the
+new events to the old dimension tables will misattribute segments."
+
+Re-running Part 9 immediately afterward reported `I1: 16 mismatched countries, max diff
+$3,113.16` - the exact signature of the EC-8 corruption alarm. This time `H0` was clean (0
+duplicates), ruling out EC-8's cause. The actual cause is structural, not a bug: `apps`/
+`advertisers`/`geo_device` are `ReplacingMergeTree`, keyed on ID with no time-versioning.
+`hourly_segment_metrics` resolves and bakes in the dimension join **at insert time** via the
+materialized view - it does not retroactively update when the dimension table changes later.
+The known batch's 9M rows were rolled up against the *original* dimension values; reloading
+the tables afterward changes what a **live** join against `ad_events` now returns for those
+same rows, but the already-materialized rollup keeps the original, correct values. Comparing
+"rollup built under mapping A" against "raw joined under mapping B" will mismatch by
+construction - measured as **16 of 16 countries**, i.e. all of them, confirming this isn't a
+partial/random corruption pattern but a total, expected snapshot/live divergence.
+
+Proven benign, not asserted: re-ran the identical raw-vs-rollup join for the known batch
+(`toDate(event_time) < '2026-07-06'`) against a temporary table loaded from the **original,
+still-on-disk** `data/inmobi/geo_device.csv` snapshot (untouched - `load_data.sh` was pointed
+at `data/inmobi_unseen`, never overwrote it). Result: **0 mismatches**. The rollup is exactly
+as correct as it was before the reload; only a check that assumes "current dimension table =
+ground truth for all time" was invalidated. The unseen slice itself (2026-07-06+, rolled up
+*after* the dimension reload, per `load_data.sh`'s load-dimensions-then-commit-events order)
+was independently cross-checked against the *current* table across **all six** joined
+dimensions (`category`, `publisher_tier`, `vertical`, `campaign_type`, `device_model`,
+`os_version`), plus referential integrity for all three ID columns: **0 mismatches, 0
+orphans** everywhere.
+
+Consequence, stated plainly: any known-batch investigation re-run *live* after this reload
+(e.g. re-querying `/api/investigate` for 2026-06-23) will report segment names drawn from the
+**regenerated** dimension mapping, not the original one documented earlier in this file and in
+`PROGRESS.md` (e.g. the original "Android 15 -> Galaxy A54" story used the *original*
+`os_version`/`device_model` assignment for those `geo_device_id`s - that assignment no longer
+exists anywhere except in the frozen CSV and in already-captured PDF reports/Langfuse traces
+from before the reload). That's an accepted, disclosed trade-off of the append decision, not a
+new bug: the graded artifact is the unseen-incident bundle, which is unaffected, and the known
+batch's already-exported evidence remains valid as a record of what the system found *at the
+time*, even though live re-querying it now would compute differently. `scripts/edge_cases.sql`
+Part 9 was updated to scope `I1` to the unseen slice only, where its "rollup agrees with a live
+dimension join" assumption is valid again.
 
 ---
 

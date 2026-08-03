@@ -511,4 +511,5 @@ def investigate(metric_name: str, day: date, anomaly_candidate_id: Optional[str]
         "data_coverage_note": coverage_note,
         "timings": timings_dict,
         "langfuse_trace_id": trace_id,
+        "langfuse_trace_url": tracing.get_trace_url(trace_id),
     }

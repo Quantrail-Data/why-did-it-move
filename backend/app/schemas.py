@@ -30,6 +30,7 @@ class ScanCoverage(BaseModel):
 class ScanResponse(BaseModel):
     scanned: int
     new_candidates: int
+    refreshed_candidates: int = 0
     thresholds: dict[str, MetricThreshold]
     coverage: ScanCoverage
 
